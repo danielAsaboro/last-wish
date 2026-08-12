@@ -19,12 +19,17 @@ export function buildPolicyArguments(draft: PolicyDraft) {
     throw new Error("Guardian must be different from the owner.");
   }
   if (draft.beneficiaries.length === 0) throw new Error("Add at least one beneficiary.");
+  if (draft.beneficiaries.length > 10) throw new Error("A policy can include at most 10 beneficiaries.");
   const addresses = draft.beneficiaries.map((beneficiary) => {
     if (!isAddress(beneficiary.address)) throw new Error(`${beneficiary.label || "Beneficiary"} needs a valid EVM address.`);
     return getAddress(beneficiary.address) as Address;
   });
   if (new Set(addresses.map((address) => address.toLowerCase())).size !== addresses.length) {
     throw new Error("Beneficiary addresses must be unique.");
+  }
+  const protectedRoles = new Set([draft.owner.toLowerCase(), draft.guardian.toLowerCase()]);
+  if (addresses.some((address) => protectedRoles.has(address.toLowerCase()))) {
+    throw new Error("Beneficiaries must be different from the owner and guardian.");
   }
   const shares = draft.beneficiaries.map((beneficiary) => beneficiary.shareBps);
   if (shares.some((share) => !Number.isInteger(share) || share <= 0) || shares.reduce((sum, share) => sum + share, 0) !== 10_000) {

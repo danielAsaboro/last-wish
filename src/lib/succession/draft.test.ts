@@ -43,4 +43,27 @@ describe("buildPolicyArguments", () => {
       }),
     ).toThrow(/guardian must be different|valid evm address/i);
   });
+
+  it("rejects beneficiary role overlap and beneficiary sets larger than ten", () => {
+    const base = {
+      owner,
+      guardian: "0x2222222222222222222222222222222222222222",
+      heartbeatDays: 30,
+      graceDays: 14,
+      testnetDemo: false,
+    };
+    expect(() => buildPolicyArguments({
+      ...base,
+      beneficiaries: [{ label: "Owner", address: owner, shareBps: 10000 }],
+    })).toThrow(/different from the owner and guardian/i);
+
+    expect(() => buildPolicyArguments({
+      ...base,
+      beneficiaries: Array.from({ length: 11 }, (_, index) => ({
+        label: `Beneficiary ${index + 1}`,
+        address: `0x${String(index + 10).padStart(40, "0")}`,
+        shareBps: index === 10 ? 910 : 909,
+      })),
+    })).toThrow(/at most 10 beneficiaries/i);
+  });
 });

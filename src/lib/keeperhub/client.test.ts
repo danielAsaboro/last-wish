@@ -6,6 +6,7 @@ import {
   classifyWorkflowEvidence,
   parseEnabledChains,
   selectExecutionChain,
+  verifyKeeperHubWriteLog,
 } from "./client";
 
 const vault = "0x1111111111111111111111111111111111111111" as const;
@@ -81,10 +82,11 @@ describe("KeeperHub execution evidence", () => {
         workflowId: "wf_open",
         status: "success",
         startedAt: "2026-08-12T12:00:00Z",
+        completedAt: "2026-08-12T12:00:05Z",
         transactionHashes: [{ hash, nodeId: "execute", nodeName: "Open grace period", chainId: 84532 }],
       },
       "PENDING",
-      { receiptStatus: "success", eventVerified: true, blockNumber: 42n, gasUsed: 70_000n, observedVaultStatus: "PENDING" },
+      { keeperWriteVerified: true, receiptStatus: "success", eventVerified: true, blockNumber: 42n, gasUsed: 70_000n, observedVaultStatus: "PENDING" },
     )).toMatchObject({
       executionId: "exec_workflow",
       workflowId: "wf_open",
@@ -92,7 +94,36 @@ describe("KeeperHub execution evidence", () => {
       verified: true,
       receiptStatus: "success",
       observedVaultStatus: "PENDING",
+      timestamp: 1_786_536_005n,
     });
+  });
+
+  it("requires KeeperHub's successful write-step log to match the transaction", () => {
+    expect(verifyKeeperHubWriteLog({
+      execution: { id: "exec_1", workflowId: "wf_1", status: "success" },
+      logs: [{
+        id: "log_1", executionId: "exec_1", nodeId: "execute", nodeName: "Open grace", nodeType: "web3/write-contract", status: "success",
+        input: {}, output: { success: true, transactionHash: hash, gasUsedUnits: "70000" }, error: null,
+        duration: "1000", startedAt: "2026-08-12T12:00:00Z", completedAt: "2026-08-12T12:00:01Z",
+      }],
+    }, hash)).toBe(true);
+
+    expect(verifyKeeperHubWriteLog({
+      execution: { id: "exec_1", workflowId: "wf_1", status: "success" },
+      logs: [{
+        id: "log_1", executionId: "exec_1", nodeId: "execute", nodeName: "Open grace", nodeType: "web3/write-contract", status: "success",
+        input: {}, output: { success: true, transactionHash: `0x${"b".repeat(64)}` }, error: null,
+        duration: "1000", startedAt: "2026-08-12T12:00:00Z", completedAt: "2026-08-12T12:00:01Z",
+      }],
+    }, hash)).toBe(false);
+  });
+
+  it("marks a transaction ambiguous when KeeperHub's write log is missing", () => {
+    expect(classifyWorkflowEvidence(
+      { id: "exec_workflow", workflowId: "wf_open", status: "success", transactionHashes: [{ hash, nodeId: "execute", nodeName: "Open grace" }] },
+      "PENDING",
+      { keeperWriteVerified: false, receiptStatus: "success", eventVerified: true, observedVaultStatus: "PENDING" },
+    )).toMatchObject({ status: "unknown", verified: false, observedVaultStatus: "RECOVERY_REQUIRED" });
   });
 
   it("does not describe a successful eligibility check with no write as a settlement transaction", () => {

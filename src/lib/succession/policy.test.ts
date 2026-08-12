@@ -76,6 +76,31 @@ describe("validatePolicy", () => {
       ],
     });
   });
+
+  it("rejects overlapping owner, guardian, and beneficiary roles", () => {
+    expect(validatePolicy({
+      ...policy,
+      guardian: policy.owner,
+      beneficiaries: [{ ...policy.beneficiaries[0], address: policy.owner }, policy.beneficiaries[1]],
+    })).toEqual({
+      ok: false,
+      errors: [
+        "Guardian must be different from the owner.",
+        "Beneficiaries must be different from the owner and guardian.",
+      ],
+    });
+  });
+
+  it("rejects more than ten beneficiaries", () => {
+    expect(validatePolicy({
+      ...policy,
+      beneficiaries: Array.from({ length: 11 }, (_, index) => ({
+        address: `0x${String(index + 10).padStart(40, "0")}`,
+        label: `Beneficiary ${index + 1}`,
+        shareBps: index === 10 ? 910 : 909,
+      })) as SuccessionPolicy["beneficiaries"],
+    })).toEqual({ ok: false, errors: ["A policy can include at most 10 beneficiaries."] });
+  });
 });
 
 describe("policyHashInput", () => {

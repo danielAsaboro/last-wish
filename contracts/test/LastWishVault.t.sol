@@ -44,6 +44,33 @@ contract LastWishVaultTest is Test {
         new LastWishVault(owner, guardian, duplicate, shares, 59, 1 hours, true);
     }
 
+    function testConstructorRejectsOverlappingOwnerGuardianAndBeneficiaryRoles() public {
+        (address[] memory beneficiaries, uint16[] memory shares) = _policy();
+
+        vm.expectRevert(LastWishVault.RoleOverlap.selector);
+        new LastWishVault(owner, owner, beneficiaries, shares, 1 hours, 1 hours, true);
+
+        beneficiaries[0] = owner;
+        vm.expectRevert(LastWishVault.RoleOverlap.selector);
+        new LastWishVault(owner, guardian, beneficiaries, shares, 1 hours, 1 hours, true);
+
+        beneficiaries[0] = guardian;
+        vm.expectRevert(LastWishVault.RoleOverlap.selector);
+        new LastWishVault(owner, guardian, beneficiaries, shares, 1 hours, 1 hours, true);
+    }
+
+    function testConstructorBoundsBeneficiaryCountToKeepFinalizationExecutable() public {
+        address[] memory beneficiaries = new address[](11);
+        uint16[] memory shares = new uint16[](11);
+        for (uint256 i; i < 11; ++i) {
+            beneficiaries[i] = makeAddr(string.concat("beneficiary-", vm.toString(i)));
+            shares[i] = i == 10 ? 910 : 909;
+        }
+
+        vm.expectRevert(LastWishVault.InvalidBeneficiaryCount.selector);
+        new LastWishVault(owner, guardian, beneficiaries, shares, 1 hours, 1 hours, true);
+    }
+
     function testNormalVaultRejectsDemoTiming() public {
         (address[] memory beneficiaries, uint16[] memory shares) = _policy();
         vm.expectRevert(LastWishVault.UnsafeTiming.selector);

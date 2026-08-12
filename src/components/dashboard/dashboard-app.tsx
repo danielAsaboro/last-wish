@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   formatEther,
   getAddress,
@@ -18,15 +18,20 @@ import {
   useWalletClient,
 } from "wagmi";
 
+import { buildChainAuditEvents } from "@/lib/audit/chain-events";
 import { buildAuditTimeline, type ChainAuditEvent } from "@/lib/audit/timeline";
 import { factoryAbi, vaultAbi } from "@/lib/contracts/abi";
 import { buildPolicyArguments, type PolicyDraft } from "@/lib/succession/draft";
+import { labelsFromDraft, mergeBeneficiaryLabels, parseBeneficiaryLabels } from "@/lib/succession/labels";
+import { buildLifecycleSummary } from "@/lib/succession/status";
 import type { Beneficiary, KeeperHubEvidence, VaultStatus } from "@/lib/succession/types";
 import { preferredChain } from "@/lib/wallet/config";
+import { assertSuccessfulReceipt } from "@/lib/wallet/transaction";
 import {
   DashboardView,
   type DashboardAction,
   type DashboardRole,
+  type WalletTransactionProgress,
 } from "./dashboard-view";
 
 type LoadedBeneficiary = Beneficiary & { claimableWei: bigint };
@@ -39,6 +44,9 @@ type LoadedVault = {
   balanceWei: bigint;
   heartbeatInterval: bigint;
   gracePeriod: bigint;
+  lastHeartbeat: bigint;
+  pendingAt: bigint;
+  observedAt: bigint;
   beneficiaries: LoadedBeneficiary[];
 };
 
@@ -62,6 +70,8 @@ export function DashboardApp() {
   const [pendingAction, setPendingAction] = useState<DashboardAction | null>(null);
   const [composer, setComposer] = useState<"fund" | "withdraw" | "update-policy" | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
+  const [transactionProgress, setTransactionProgress] = useState<WalletTransactionProgress>();
+  const blockTimestampCache = useRef(new Map<bigint, bigint>());
 
   useEffect(() => {
     const restore = window.setTimeout(() => {
@@ -74,7 +84,7 @@ export function DashboardApp() {
   const refreshVault = useCallback(async () => {
     if (!vaultAddress || !publicClient) return;
     try {
-      const [owner, guardian, policyVersion, statusCode, beneficiaryCount, heartbeatInterval, gracePeriod, balance] = await Promise.all([
+      const [owner, guardian, policyVersion, statusCode, beneficiaryCount, heartbeatInterval, gracePeriod, lastHeartbeat, pendingAt, balance] = await Promise.all([
         publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "owner" }),
         publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "guardian" }),
         publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "policyVersion" }),
@@ -82,6 +92,8 @@ export function DashboardApp() {
         publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "beneficiaryCount" }),
         publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "heartbeatInterval" }),
         publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "gracePeriod" }),
+        publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "lastHeartbeat" }),
+        publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "pendingAt" }),
         publicClient.getBalance({ address: vaultAddress }),
       ]);
       const addresses = await Promise.all(
@@ -89,13 +101,15 @@ export function DashboardApp() {
           publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "beneficiaryAt", args: [BigInt(index)] }),
         ),
       );
-      const beneficiaries = await Promise.all(addresses.map(async (address, index) => {
+      const chainBeneficiaries = await Promise.all(addresses.map(async (address) => {
         const [shareBps, claimableWei] = await Promise.all([
           publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "shareBps", args: [address] }),
           publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "claimable", args: [address] }),
         ]);
-        return { address, label: `Beneficiary ${index + 1}`, shareBps: Number(shareBps), claimableWei };
+        return { address, shareBps: Number(shareBps), claimableWei };
       }));
+      const labelKey = `lastwish:labels:${preferredChain.id}:${vaultAddress}`;
+      const beneficiaries = mergeBeneficiaryLabels(chainBeneficiaries, parseBeneficiaryLabels(window.localStorage.getItem(labelKey)));
       setVault({
         address: vaultAddress,
         owner,
@@ -105,23 +119,20 @@ export function DashboardApp() {
         balanceWei: balance,
         heartbeatInterval,
         gracePeriod,
+        lastHeartbeat,
+        pendingAt,
+        observedAt: BigInt(Math.floor(Date.now() / 1000)),
         beneficiaries,
       });
       window.localStorage.setItem(`lastwish:vault:${preferredChain.id}`, vaultAddress);
 
-      const logs = await publicClient.getContractEvents({ address: vaultAddress, abi: vaultAbi, fromBlock: 0n });
-      setAuditEvents(logs.flatMap((log, index) => {
-        const type = mapEventName(log.eventName);
-        if (!type) return [];
-        const args = log.args as Record<string, unknown>;
-        return [{
-          id: `${log.transactionHash}-${log.logIndex ?? index}`,
-          type,
-          timestamp: log.blockNumber,
-          transactionHash: log.transactionHash,
-          amountWei: typeof args.amount === "bigint" ? args.amount : typeof args.balance === "bigint" ? args.balance : undefined,
-        } satisfies ChainAuditEvent];
-      }));
+      const deploymentBlock = BigInt(process.env.NEXT_PUBLIC_LASTWISH_DEPLOYMENT_BLOCK ?? "0");
+      const logs = await publicClient.getContractEvents({ address: vaultAddress, abi: vaultAbi, fromBlock: deploymentBlock });
+      const blockNumbers = [...new Set(logs.map((log) => log.blockNumber).filter((block): block is bigint => block !== null))];
+      const missingBlocks = blockNumbers.filter((blockNumber) => !blockTimestampCache.current.has(blockNumber));
+      const blocks = await Promise.all(missingBlocks.map((blockNumber) => publicClient.getBlock({ blockNumber })));
+      for (const block of blocks) blockTimestampCache.current.set(block.number, block.timestamp);
+      setAuditEvents(buildChainAuditEvents(logs, blockTimestampCache.current));
     } catch (error) {
       setVault(undefined);
       setNotice({ tone: "danger", text: `Could not read this vault on ${preferredChain.name}: ${errorMessage(error)}` });
@@ -130,7 +141,8 @@ export function DashboardApp() {
 
   useEffect(() => {
     const kickoff = window.setTimeout(() => void refreshVault(), 0);
-    return () => window.clearTimeout(kickoff);
+    const interval = window.setInterval(() => { if (!document.hidden) void refreshVault(); }, 30_000);
+    return () => { window.clearTimeout(kickoff); window.clearInterval(interval); };
   }, [refreshVault]);
 
   useEffect(() => {
@@ -163,11 +175,12 @@ export function DashboardApp() {
         body: JSON.stringify({ chainId: preferredChain.id, vault: vaultAddress, registrations }),
       });
       if (!response.ok) return;
-      const body = await response.json() as { evidence?: Array<Omit<KeeperHubEvidence, "blockNumber" | "gasUsed"> & { blockNumber?: string; gasUsed?: string }> };
+      const body = await response.json() as { evidence?: Array<Omit<KeeperHubEvidence, "blockNumber" | "gasUsed" | "timestamp"> & { blockNumber?: string; gasUsed?: string; timestamp?: string }> };
       setKeeperEvidence((body.evidence ?? []).map((item) => ({
         ...item,
         blockNumber: item.blockNumber === undefined ? undefined : BigInt(item.blockNumber),
         gasUsed: item.gasUsed === undefined ? undefined : BigInt(item.gasUsed),
+        timestamp: item.timestamp === undefined ? undefined : BigInt(item.timestamp),
       })));
     } catch {
       // Preserve the last reconciled evidence until a later read succeeds.
@@ -192,20 +205,22 @@ export function DashboardApp() {
 
   const connection = !isConnected ? "disconnected" : chainId !== preferredChain.id ? "wrong-network" : "connected";
   const auditItems = useMemo(() => buildAuditTimeline({ chainEvents: auditEvents, keeperHub: keeperEvidence }), [auditEvents, keeperEvidence]);
+  const lifecycle = useMemo(() => vault ? buildLifecycleSummary(vault, vault.observedAt) : undefined, [vault]);
 
   async function executeSimpleAction(action: Exclude<DashboardAction, "fund" | "withdraw" | "update-policy" | "register">) {
     if (!walletClient || !vaultAddress || !publicClient) return;
     const functionName = { heartbeat: "heartbeat", veto: "vetoSettlement", finalize: "finalizeSettlement", claim: "claim" }[action] as "heartbeat" | "vetoSettlement" | "finalizeSettlement" | "claim";
     setPendingAction(action); setNotice(null);
+    setTransactionProgress({ label: labelForAction(action), stage: "AWAITING_SIGNATURE" });
     try {
       const hash = await walletClient.writeContract({ address: vaultAddress, abi: vaultAbi, functionName });
-      const receipt = await publicClient.waitForTransactionReceipt({ hash });
-      if (receipt.status !== "success") throw new Error("The transaction reverted.");
+      setTransactionProgress({ label: labelForAction(action), stage: "CONFIRMING", transactionHash: hash });
+      const receipt = assertSuccessfulReceipt(await publicClient.waitForTransactionReceipt({ hash }));
       setNotice({ tone: "success", text: `${labelForAction(action)} confirmed in block ${receipt.blockNumber}.` });
       await refreshVault();
     } catch (error) {
       setNotice({ tone: "danger", text: errorMessage(error) });
-    } finally { setPendingAction(null); }
+    } finally { setPendingAction(null); setTransactionProgress(undefined); }
   }
 
   function handleAction(action: DashboardAction) {
@@ -222,49 +237,58 @@ export function DashboardApp() {
       setNotice({ tone: "danger", text: "Vault deployment is unavailable until NEXT_PUBLIC_LASTWISH_FACTORY_ADDRESS is configured." }); return;
     }
     setPendingAction("update-policy"); setNotice(null);
+    setTransactionProgress({ label: "Deploy vault", stage: "AWAITING_SIGNATURE" });
     try {
       const args = buildPolicyArguments(draft);
       const hash = await walletClient.writeContract({
         address: getAddress(factoryAddress), abi: factoryAbi, functionName: "createVault",
         args: [args.guardian, args.beneficiaryAddresses, args.shares, args.heartbeatSeconds, args.graceSeconds, args.testnetDemo],
       });
-      const receipt = await publicClient.waitForTransactionReceipt({ hash });
+      setTransactionProgress({ label: "Deploy vault", stage: "CONFIRMING", transactionHash: hash });
+      const receipt = assertSuccessfulReceipt(await publicClient.waitForTransactionReceipt({ hash }));
       const [created] = parseEventLogs({ abi: factoryAbi, eventName: "VaultCreated", logs: receipt.logs });
       if (!created) throw new Error("The factory receipt did not contain VaultCreated.");
       const address = created.args.vault;
       setVaultAddress(address);
       window.localStorage.setItem(`lastwish:vault:${preferredChain.id}`, address);
+      window.localStorage.setItem(`lastwish:labels:${preferredChain.id}:${address}`, JSON.stringify(labelsFromDraft(draft.beneficiaries)));
       setNotice({ tone: "success", text: `Vault ${address} deployed and confirmed in block ${receipt.blockNumber}.` });
     } catch (error) { setNotice({ tone: "danger", text: errorMessage(error) }); }
-    finally { setPendingAction(null); }
+    finally { setPendingAction(null); setTransactionProgress(undefined); }
   }
 
   async function updatePolicy(draft: PolicyDraft) {
     if (!walletClient || !publicClient || !vaultAddress) return;
     setPendingAction("update-policy");
+    setTransactionProgress({ label: "Update policy", stage: "AWAITING_SIGNATURE" });
     try {
       const args = buildPolicyArguments(draft);
       const hash = await walletClient.writeContract({ address: vaultAddress, abi: vaultAbi, functionName: "updatePolicy", args: [args.guardian, args.beneficiaryAddresses, args.shares, args.heartbeatSeconds, args.graceSeconds, args.testnetDemo] });
-      const receipt = await publicClient.waitForTransactionReceipt({ hash });
+      setTransactionProgress({ label: "Update policy", stage: "CONFIRMING", transactionHash: hash });
+      const receipt = assertSuccessfulReceipt(await publicClient.waitForTransactionReceipt({ hash }));
+      window.localStorage.setItem(`lastwish:labels:${preferredChain.id}:${vaultAddress}`, JSON.stringify(labelsFromDraft(draft.beneficiaries)));
       setComposer(null); setNotice({ tone: "success", text: `Policy update confirmed in block ${receipt.blockNumber}. The heartbeat clock reset.` });
       await refreshVault();
     } catch (error) { setNotice({ tone: "danger", text: errorMessage(error) }); }
-    finally { setPendingAction(null); }
+    finally { setPendingAction(null); setTransactionProgress(undefined); }
   }
 
   async function transferValue(kind: "fund" | "withdraw", recipient: string, amount: string) {
     if (!walletClient || !publicClient || !vaultAddress || !isAddress(recipient)) return;
     setPendingAction(kind);
+    const transactionLabel = kind === "fund" ? "Fund vault" : "Withdraw funds";
+    setTransactionProgress({ label: transactionLabel, stage: "AWAITING_SIGNATURE" });
     try {
       const value = parseEther(amount);
       const hash = kind === "fund"
         ? await walletClient.sendTransaction({ to: vaultAddress, value })
         : await walletClient.writeContract({ address: vaultAddress, abi: vaultAbi, functionName: "withdraw", args: [getAddress(recipient), value] });
-      const receipt = await publicClient.waitForTransactionReceipt({ hash });
+      setTransactionProgress({ label: transactionLabel, stage: "CONFIRMING", transactionHash: hash });
+      const receipt = assertSuccessfulReceipt(await publicClient.waitForTransactionReceipt({ hash }));
       setComposer(null); setNotice({ tone: "success", text: `${kind === "fund" ? "Funding" : "Withdrawal"} confirmed in block ${receipt.blockNumber}.` });
       await refreshVault();
     } catch (error) { setNotice({ tone: "danger", text: errorMessage(error) }); }
-    finally { setPendingAction(null); }
+    finally { setPendingAction(null); setTransactionProgress(undefined); }
   }
 
   async function registerKeeperHub() {
@@ -296,10 +320,13 @@ export function DashboardApp() {
     balanceLabel={vault ? `${formatEther(vault.balanceWei)} ETH` : "—"}
     policyVersion={vault?.policyVersion.toString() ?? "—"}
     beneficiaries={(vault?.beneficiaries ?? []).map((beneficiary) => ({ label: beneficiary.label, address: beneficiary.address, shareLabel: `${beneficiary.shareBps / 100}%`, claimed: vault?.status === "SETTLED" && beneficiary.claimableWei === 0n }))}
+    canClaim={Boolean(account && vault?.beneficiaries.some((beneficiary) => beneficiary.address.toLowerCase() === account.toLowerCase() && beneficiary.claimableWei > 0n))}
     auditItems={auditItems}
     pendingAction={pendingAction}
     message={notice}
     automationLabel={workflowCount > 0 ? `${workflowCount} KeeperHub workflows · evidence refreshes every 30s` : "KeeperHub automation not registered"}
+    lifecycle={lifecycle}
+    transactionProgress={transactionProgress}
     onConnect={() => connectors[0] && connect({ connector: connectors[0] })}
     onSwitchNetwork={() => switchChain({ chainId: preferredChain.id })}
     onAction={handleAction}
@@ -360,7 +387,7 @@ function VaultWorkspace(props: {
   </>;
 }
 
-function PolicyEditor({ owner, mode, pending, initial, onSubmit }: { owner: Address; mode: "create" | "update"; pending: boolean; initial?: LoadedVault; onSubmit(draft: PolicyDraft): Promise<void> }) {
+export function PolicyEditor({ owner, mode, pending, initial, onSubmit }: { owner: Address; mode: "create" | "update"; pending: boolean; initial?: LoadedVault; onSubmit(draft: PolicyDraft): Promise<void> | void }) {
   const [step, setStep] = useState(1);
   const [guardian, setGuardian] = useState(initial?.guardian ?? "");
   const [beneficiaries, setBeneficiaries] = useState<Array<{ label: string; address: string; shareBps: number }>>(
@@ -399,7 +426,7 @@ function PolicyEditor({ owner, mode, pending, initial, onSubmit }: { owner: Addr
           <label><input aria-label={`Beneficiary ${index + 1} share`} type="number" min="0.01" max="100" step="0.01" value={beneficiary.shareBps / 100} onChange={(event) => setBeneficiaries(beneficiaries.map((item, itemIndex) => itemIndex === index ? { ...item, shareBps: Math.round(Number(event.target.value) * 100) } : item))} />%</label>
           {beneficiaries.length > 1 && <button aria-label={`Remove beneficiary ${index + 1}`} onClick={() => setBeneficiaries(beneficiaries.filter((_, itemIndex) => itemIndex !== index))}>×</button>}
         </div>)}
-        <button className="add-row" onClick={() => setBeneficiaries([...beneficiaries, { label: "", address: "", shareBps: 0 }])}>+ Add beneficiary</button>
+        <button className="add-row" disabled={beneficiaries.length >= 10} onClick={() => setBeneficiaries([...beneficiaries, { label: "", address: "", shareBps: 0 }])}>{beneficiaries.length >= 10 ? "10 beneficiary limit" : "+ Add beneficiary"}</button>
       </div>
     </div>}
     {step === 2 && <div className="timing-grid">
@@ -419,9 +446,6 @@ function PolicyEditor({ owner, mode, pending, initial, onSubmit }: { owner: Addr
   </section>;
 }
 
-function mapEventName(name: string): ChainAuditEvent["type"] | undefined {
-  return ({ Deposit: "Deposit", Heartbeat: "Heartbeat", PolicyUpdated: "PolicyUpdated", SettlementOpened: "SettlementOpened", SettlementVetoedByGuardian: "SettlementVetoed", SettlementFinalized: "SettlementFinalized", Withdrawal: "Withdrawal", Claimed: "Claimed" } as Record<string, ChainAuditEvent["type"]>)[name];
-}
 function errorMessage(error: unknown) { if (typeof error === "object" && error && "shortMessage" in error && typeof error.shortMessage === "string") return error.shortMessage; return error instanceof Error ? error.message : "The operation failed."; }
 function labelForAction(action: string) { return ({ heartbeat: "Heartbeat", veto: "Guardian veto", finalize: "Settlement finalization", claim: "Beneficiary claim" } as Record<string, string>)[action] ?? action; }
 

@@ -6,8 +6,8 @@ describe("buildAuditTimeline", () => {
   it("orders chain and KeeperHub evidence while preserving provenance", () => {
     const timeline = buildAuditTimeline({
       chainEvents: [
-        { id: "policy-1", type: "PolicyUpdated", timestamp: 100n, transactionHash: `0x${"1".repeat(64)}` },
-        { id: "heartbeat-1", type: "Heartbeat", timestamp: 120n, transactionHash: `0x${"2".repeat(64)}` },
+        { id: "policy-1", type: "PolicyUpdated", timestamp: 100n, blockNumber: 10n, transactionHash: `0x${"1".repeat(64)}` },
+        { id: "heartbeat-1", type: "Heartbeat", timestamp: 120n, blockNumber: 12n, transactionHash: `0x${"2".repeat(64)}` },
       ],
       keeperHub: [
         {
@@ -18,11 +18,34 @@ describe("buildAuditTimeline", () => {
           transactionHash: `0x${"3".repeat(40)}`,
           receiptStatus: "success",
           observedVaultStatus: "PENDING",
+          timestamp: 130n,
+          blockNumber: 99n,
+          gasUsed: 70_000n,
         },
       ],
     });
-    expect(timeline.map((item) => item.source)).toEqual(["chain", "chain", "keeperhub"]);
-    expect(timeline.at(-1)).toMatchObject({ title: "KeeperHub execution verified", tone: "success" });
+    expect(timeline.map((item) => item.source)).toEqual(["keeperhub", "chain", "chain"]);
+    expect(timeline[0]).toMatchObject({ title: "KeeperHub execution verified", tone: "success", blockNumber: 99n, gasUsed: 70_000n });
+  });
+
+  it("shows human-readable value and actor provenance for chain events", () => {
+    const timeline = buildAuditTimeline({
+      chainEvents: [{
+        id: "deposit",
+        type: "Deposit",
+        timestamp: 1_800_000_000n,
+        blockNumber: 42n,
+        transactionHash: `0x${"4".repeat(64)}`,
+        actor: "0x1111111111111111111111111111111111111111",
+        amountWei: 250000000000000000n,
+      }],
+      keeperHub: [],
+    });
+    expect(timeline[0]).toMatchObject({
+      detail: "0.25 ETH · confirmed in block 42 · actor 0x1111…1111.",
+      timestamp: 1_800_000_000n,
+      blockNumber: 42n,
+    });
   });
 
   it("turns ambiguous execution into an explicit reconciliation step", () => {

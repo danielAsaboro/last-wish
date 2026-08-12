@@ -57,4 +57,15 @@ describe("KeeperHubClient", () => {
       expect.any(Object),
     );
   });
+
+  it("retrieves per-step execution logs for KeeperHub-side write verification", async () => {
+    const response = { execution: { id: "exec_123", workflowId: "wf_123", status: "success" }, logs: [] };
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json(response));
+    const client = new KeeperHubClient({ apiKey: "kh_secret", fetcher });
+    await expect(client.getWorkflowExecutionLogs("exec_123")).resolves.toEqual(response);
+    expect(fetcher).toHaveBeenCalledWith(
+      "https://app.keeperhub.com/api/workflows/executions/exec_123/logs",
+      expect.any(Object),
+    );
+  });
 });

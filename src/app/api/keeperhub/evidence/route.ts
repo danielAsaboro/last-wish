@@ -3,7 +3,7 @@ import { z } from "zod";
 
 import { baseSepolia, sepolia } from "@/lib/chains";
 import { vaultAbi } from "@/lib/contracts/abi";
-import { classifyWorkflowEvidence } from "@/lib/keeperhub/client";
+import { classifyWorkflowEvidence, verifyKeeperHubWriteLog } from "@/lib/keeperhub/client";
 import { keeperHubClientFromEnv } from "@/lib/keeperhub/server";
 import type { KeeperHubEvidence, VaultStatus } from "@/lib/succession/types";
 
@@ -50,12 +50,14 @@ export async function POST(request: Request) {
         }
 
         try {
+          const keeperHubLogs = await keeperHub.getWorkflowExecutionLogs(execution.id);
           const receipt = await rpc.getTransactionReceipt({ hash: transactionHash });
           const expectedEvent = registration.expectedStatus === "PENDING" ? "SettlementOpened" : "SettlementFinalized";
           const eventVerified = parseEventLogs({ abi: vaultAbi, logs: receipt.logs }).some(
             (log) => log.address.toLowerCase() === vault.toLowerCase() && log.eventName === expectedEvent,
           );
           evidence.push(classifyWorkflowEvidence(execution, registration.expectedStatus, {
+            keeperWriteVerified: verifyKeeperHubWriteLog(keeperHubLogs, transactionHash),
             receiptStatus: receipt.status,
             eventVerified,
             blockNumber: receipt.blockNumber,
@@ -76,6 +78,7 @@ export async function POST(request: Request) {
         ...item,
         blockNumber: item.blockNumber?.toString(),
         gasUsed: item.gasUsed?.toString(),
+        timestamp: item.timestamp?.toString(),
       })),
     });
   } catch (error) {

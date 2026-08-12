@@ -1,10 +1,12 @@
 import Link from "next/link";
 
 import type { AuditTimelineItem } from "@/lib/audit/timeline";
-import type { VaultStatus } from "@/lib/succession/types";
+import type { LifecycleSummary } from "@/lib/succession/status";
+import type { Address, VaultStatus } from "@/lib/succession/types";
 
 export type DashboardRole = "owner" | "guardian" | "beneficiary" | "observer";
 export type DashboardAction = "heartbeat" | "update-policy" | "withdraw" | "veto" | "finalize" | "claim" | "fund" | "register";
+export type WalletTransactionProgress = { label: string; stage: "AWAITING_SIGNATURE" | "CONFIRMING"; transactionHash?: Address };
 
 export type DashboardViewProps = {
   connection: "disconnected" | "wrong-network" | "connected";
@@ -16,10 +18,13 @@ export type DashboardViewProps = {
   balanceLabel: string;
   policyVersion: string;
   beneficiaries: Array<{ label: string; address: string; shareLabel: string; claimed: boolean }>;
+  canClaim: boolean;
   auditItems: AuditTimelineItem[];
   pendingAction: DashboardAction | null;
   message: { tone: "success" | "warning" | "danger"; text: string } | null;
   automationLabel?: string;
+  lifecycle?: LifecycleSummary;
+  transactionProgress?: WalletTransactionProgress;
   onConnect(): void;
   onSwitchNetwork(): void;
   onAction(action: DashboardAction): void;
@@ -62,6 +67,7 @@ export function DashboardView(props: DashboardViewProps) {
       </header>
 
       {props.message && <div className={`notice ${props.message.tone}`} role="status">{props.message.text}</div>}
+      {props.transactionProgress && <TransactionProgress progress={props.transactionProgress} chainName={props.chainName} />}
       {props.children}
 
       {props.vaultAddress ? (
@@ -77,16 +83,19 @@ export function DashboardView(props: DashboardViewProps) {
               {props.role === "owner" && props.status === "ACTIVE" && <>
                 <ActionButton action="heartbeat" label="Record heartbeat" {...props} />
                 <ActionButton action="update-policy" label="Update policy" {...props} />
-                <ActionButton action="withdraw" label="Withdraw" {...props} />
+                {props.lifecycle?.phase !== "OPEN_ELIGIBLE" && <ActionButton action="withdraw" label="Withdraw" {...props} />}
                 <ActionButton action="fund" label="Fund vault" {...props} />
               </>}
               {props.role === "owner" && ["PENDING", "VETOED"].includes(props.status) && <ActionButton action="heartbeat" label="Reactivate vault" {...props} />}
               {props.role === "guardian" && ["PENDING", "READY"].includes(props.status) && <ActionButton action="veto" label="Veto settlement" {...props} />}
               {props.status === "READY" && <ActionButton action="finalize" label="Finalize through wallet" {...props} />}
-              {props.role === "beneficiary" && props.status === "SETTLED" && <ActionButton action="claim" label="Claim allocation" {...props} />}
-              <ActionButton action="register" label="Register KeeperHub" {...props} />
+              {props.role === "beneficiary" && props.status === "SETTLED" && props.canClaim && <ActionButton action="claim" label="Claim allocation" {...props} />}
+              {props.role === "beneficiary" && props.status === "SETTLED" && !props.canClaim && <p className="completed-action">Allocation already claimed ✓</p>}
+              {props.role === "owner" && props.status !== "SETTLED" && <ActionButton action="register" label="Register KeeperHub" {...props} />}
             </div>
           </section>
+
+          {props.lifecycle && <LifecycleCard lifecycle={props.lifecycle} />}
 
           <section className="dashboard-grid">
             <article className="panel">
@@ -103,7 +112,7 @@ export function DashboardView(props: DashboardViewProps) {
             <article className="panel audit-panel">
               <div className="panel-heading"><div><p className="eyebrow">Evidence, not activity</p><h2>Audit trail</h2></div><span>{props.auditItems.length}</span></div>
               {props.auditItems.length === 0 ? <div className="empty-state"><span>◎</span><p>No indexed events yet. Confirmed contract events and KeeperHub receipts will appear here.</p></div> :
-                <ol className="audit-list">{props.auditItems.map((item) => <li key={item.id} className={`tone-${item.tone}`}><span /><div><strong>{item.title}</strong><p>{item.detail}</p><small>{item.source}{item.executionId ? ` · ${item.executionId}` : ""}</small>{item.transactionHash && <a href={`${explorerBase(props.chainName)}/tx/${item.transactionHash}`} target="_blank" rel="noreferrer">View transaction ↗</a>}</div></li>)}</ol>}
+                <ol className="audit-list">{props.auditItems.map((item) => <li key={item.id} className={`tone-${item.tone}`}><span /><div><strong>{item.title}</strong><p>{item.detail}</p>{item.action && <p className="audit-action">{item.action}</p>}<div className="audit-meta"><small>{item.source}</small>{item.timestamp !== undefined && <time dateTime={new Date(Number(item.timestamp) * 1000).toISOString()}>{formatTimestamp(item.timestamp)}</time>}{item.blockNumber !== undefined && <span>Block {item.blockNumber.toString()}</span>}{item.gasUsed !== undefined && <span>{item.gasUsed.toLocaleString("en-US")} gas</span>}{item.workflowId && <code>{shortenIdentifier(item.workflowId)}</code>}{item.executionId && <code>{shortenIdentifier(item.executionId)}</code>}</div>{item.transactionHash && <a href={`${explorerBase(props.chainName)}/tx/${item.transactionHash}`} target="_blank" rel="noreferrer">View transaction ↗</a>}</div></li>)}</ol>}
             </article>
           </section>
         </>
@@ -112,9 +121,38 @@ export function DashboardView(props: DashboardViewProps) {
   );
 }
 
-function ActionButton({ action, label, pendingAction, onAction }: DashboardViewProps & { action: DashboardAction; label: string }) {
+function LifecycleCard({ lifecycle }: { lifecycle: LifecycleSummary }) {
+  const steps = ["Heartbeat", "Grace period", "Settlement"];
+  return <section className={`lifecycle-card phase-${lifecycle.phase.toLowerCase()}`}>
+    <div className="lifecycle-copy">
+      <p className="eyebrow">Onchain policy clock</p>
+      <h2>{lifecycle.title}</h2>
+      <p>{lifecycle.detail}</p>
+      {lifecycle.deadline !== undefined && <time dateTime={new Date(Number(lifecycle.deadline) * 1000).toISOString()}>{formatDeadline(lifecycle.deadline)}</time>}
+    </div>
+    <div className="lifecycle-track">
+      <div className="progress-track" role="progressbar" aria-label="Current policy window progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={lifecycle.progressBps / 100}>
+        <span style={{ width: `${lifecycle.progressBps / 100}%` }} />
+      </div>
+      <ol>{steps.map((step, index) => <li key={step} className={index < lifecycle.currentStep ? "complete" : index === lifecycle.currentStep ? "current" : "upcoming"} aria-current={index === lifecycle.currentStep ? "step" : "false"}><span>{index + 1}</span>{step}</li>)}</ol>
+    </div>
+  </section>;
+}
+
+function ActionButton({ action, label, pendingAction, transactionProgress, onAction }: DashboardViewProps & { action: DashboardAction; label: string }) {
   const pending = pendingAction === action;
-  return <button disabled={pendingAction !== null} onClick={() => onAction(action)}>{pending ? "Waiting for wallet…" : label}<span aria-hidden="true">→</span></button>;
+  const pendingLabel = transactionProgress?.stage === "AWAITING_SIGNATURE" ? "Confirm in wallet…" : transactionProgress?.stage === "CONFIRMING" ? "Confirming onchain…" : "Working…";
+  return <button disabled={pendingAction !== null} onClick={() => onAction(action)}>{pending ? pendingLabel : label}<span aria-hidden="true">→</span></button>;
+}
+
+function TransactionProgress({ progress, chainName }: { progress: WalletTransactionProgress; chainName: string }) {
+  const confirming = progress.stage === "CONFIRMING";
+  return <div className="transaction-progress" role="status" aria-live="polite">
+    <span className="transaction-spinner" aria-hidden="true" />
+    <div><strong>{confirming ? "Waiting for onchain confirmation" : `Confirm ${progress.label.toLowerCase()} in your wallet`}</strong><p>{confirming ? "The wallet submitted the transaction. Actions stay locked until the receipt is final." : "Review the network, contract, and values before signing. Rejecting the request leaves the vault unchanged."}</p></div>
+    <ol aria-label="Transaction stages"><li className="active">1 · Wallet approval</li><li className={confirming ? "active" : ""}>2 · Onchain confirmation</li><li>3 · State refresh</li></ol>
+    {progress.transactionHash && <a href={`${explorerBase(chainName)}/tx/${progress.transactionHash}`} target="_blank" rel="noreferrer">Track pending transaction ↗</a>}
+  </div>;
 }
 
 function DashboardFrame({ children }: { children: React.ReactNode }) {
@@ -128,4 +166,16 @@ function shorten(value?: string, size = 6) {
 
 function explorerBase(chainName: string) {
   return chainName.toLowerCase().includes("base") ? "https://sepolia.basescan.org" : "https://sepolia.etherscan.io";
+}
+
+function formatDeadline(timestamp: bigint) {
+  return new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short", timeZone: "UTC" }).format(new Date(Number(timestamp) * 1000)) + " UTC";
+}
+
+function formatTimestamp(timestamp: bigint) {
+  return new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short", timeZone: "UTC" }).format(new Date(Number(timestamp) * 1000)) + " UTC";
+}
+
+function shortenIdentifier(value: string) {
+  return value.length > 18 ? `${value.slice(0, 10)}…${value.slice(-5)}` : value;
 }

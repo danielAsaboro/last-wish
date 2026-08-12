@@ -63,6 +63,11 @@ export class KeeperHubClient {
     return parseWorkflowExecutions(body);
   }
 
+  async getWorkflowExecutionLogs(executionId: string): Promise<unknown> {
+    const { body } = await this.request(`/api/workflows/executions/${encodeURIComponent(executionId)}/logs`);
+    return body;
+  }
+
   async contractCall(request: ContractCallRequest, idempotencyKey?: string): Promise<Record<string, unknown>> {
     const { body } = await this.request("/api/execute/contract-call", {
       method: "POST",

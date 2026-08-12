@@ -1,12 +1,16 @@
+import { formatEther } from "viem";
+
 import type { Address, KeeperHubEvidence } from "@/lib/succession/types";
 
 export type ChainAuditEvent = {
   id: string;
   type: "PolicyUpdated" | "Heartbeat" | "SettlementOpened" | "SettlementVetoed" | "SettlementFinalized" | "Claimed" | "Withdrawal" | "Deposit";
   timestamp: bigint;
+  blockNumber: bigint;
   transactionHash: Address;
   actor?: Address;
   amountWei?: bigint;
+  policyVersion?: bigint;
 };
 
 export type AuditTimelineItem = {
@@ -20,6 +24,8 @@ export type AuditTimelineItem = {
   workflowId?: string;
   executionId?: string;
   action?: string;
+  blockNumber?: bigint;
+  gasUsed?: bigint;
 };
 
 const chainTitles: Record<ChainAuditEvent["type"], string> = {
@@ -37,16 +43,15 @@ export function buildAuditTimeline(input: {
   chainEvents: ChainAuditEvent[];
   keeperHub: KeeperHubEvidence[];
 }): AuditTimelineItem[] {
-  const chainItems = [...input.chainEvents]
-    .sort((left, right) => Number(left.timestamp - right.timestamp))
-    .map<AuditTimelineItem>((event) => ({
+  const chainItems = input.chainEvents.map<AuditTimelineItem>((event) => ({
       id: event.id,
       source: "chain",
       title: chainTitles[event.type],
-      detail: event.amountWei === undefined ? "Confirmed by the vault contract." : `${event.amountWei} wei confirmed onchain.`,
+      detail: chainEventDetail(event),
       tone: event.type === "SettlementVetoed" ? "warning" : "neutral",
       timestamp: event.timestamp,
       transactionHash: event.transactionHash,
+      blockNumber: event.blockNumber,
     }));
 
   const keeperItems = input.keeperHub.map<AuditTimelineItem>((evidence) => {
@@ -59,6 +64,7 @@ export function buildAuditTimeline(input: {
         tone: "neutral",
         workflowId: evidence.workflowId,
         executionId: evidence.executionId,
+        timestamp: evidence.timestamp,
       };
     }
     if (evidence.status === "unknown" || evidence.observedVaultStatus === "RECOVERY_REQUIRED") {
@@ -72,6 +78,9 @@ export function buildAuditTimeline(input: {
         executionId: evidence.executionId,
         transactionHash: evidence.transactionHash,
         action: "Inspect the existing execution and transaction before attempting another write.",
+        timestamp: evidence.timestamp,
+        blockNumber: evidence.blockNumber,
+        gasUsed: evidence.gasUsed,
       };
     }
     if (evidence.verified) {
@@ -84,6 +93,9 @@ export function buildAuditTimeline(input: {
         workflowId: evidence.workflowId,
         executionId: evidence.executionId,
         transactionHash: evidence.transactionHash,
+        timestamp: evidence.timestamp,
+        blockNumber: evidence.blockNumber,
+        gasUsed: evidence.gasUsed,
       };
     }
     return {
@@ -95,8 +107,29 @@ export function buildAuditTimeline(input: {
       workflowId: evidence.workflowId,
       executionId: evidence.executionId,
       transactionHash: evidence.transactionHash,
+      timestamp: evidence.timestamp,
+      blockNumber: evidence.blockNumber,
+      gasUsed: evidence.gasUsed,
     };
   });
 
-  return [...chainItems, ...keeperItems];
+  return [...chainItems, ...keeperItems].sort((left, right) => {
+    if (left.timestamp === undefined) return 1;
+    if (right.timestamp === undefined) return -1;
+    return Number(right.timestamp - left.timestamp);
+  });
+}
+
+function chainEventDetail(event: ChainAuditEvent): string {
+  const parts = [
+    event.amountWei === undefined ? undefined : `${formatEther(event.amountWei)} ETH`,
+    `confirmed in block ${event.blockNumber}`,
+    event.actor ? `actor ${shorten(event.actor)}` : undefined,
+  ].filter((part): part is string => part !== undefined);
+  const detail = parts.join(" · ");
+  return `${event.amountWei === undefined ? detail[0]?.toUpperCase() + detail.slice(1) : detail}.`;
+}
+
+function shorten(address: Address) {
+  return `${address.slice(0, 6)}…${address.slice(-4)}`;
 }

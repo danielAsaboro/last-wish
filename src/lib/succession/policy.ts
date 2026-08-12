@@ -2,6 +2,7 @@ import type { Address, PolicyValidation, SuccessionPolicy } from "./types";
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 const MINIMUM_TIMING_SECONDS = 60 * 60;
+const MAX_BENEFICIARIES = 10;
 
 export function validatePolicy(policy: SuccessionPolicy): PolicyValidation {
   const errors: string[] = [];
@@ -10,6 +11,19 @@ export function validatePolicy(policy: SuccessionPolicy): PolicyValidation {
     (total, beneficiary) => total + beneficiary.shareBps,
     0,
   );
+
+  if (policy.guardian.toLowerCase() === policy.owner.toLowerCase()) {
+    errors.push("Guardian must be different from the owner.");
+  }
+
+  const protectedRoles = new Set([policy.owner.toLowerCase(), policy.guardian.toLowerCase()]);
+  if (addresses.some((address) => protectedRoles.has(address))) {
+    errors.push("Beneficiaries must be different from the owner and guardian.");
+  }
+
+  if (policy.beneficiaries.length > MAX_BENEFICIARIES) {
+    errors.push("A policy can include at most 10 beneficiaries.");
+  }
 
   if (shareTotal !== 10_000) {
     errors.push("Beneficiary shares must total exactly 10,000 basis points.");

@@ -55,4 +55,5 @@ export type KeeperHubEvidence = {
   gasUsed?: bigint;
   observedVaultStatus?: VaultStatus;
   outcome?: "TRANSACTION" | "NO_WRITE";
+  timestamp?: bigint;
 };

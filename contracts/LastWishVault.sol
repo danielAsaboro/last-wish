@@ -13,6 +13,7 @@ contract LastWishVault is ReentrancyGuard {
     }
 
     uint256 public constant BASIS_POINTS = 10_000;
+    uint256 public constant MAX_BENEFICIARIES = 10;
     uint256 public constant MIN_DEMO_TIMING = 60;
     uint256 public constant MIN_STANDARD_TIMING = 1 days;
 
@@ -38,6 +39,7 @@ contract LastWishVault is ReentrancyGuard {
     error InvalidBeneficiaryCount();
     error InvalidShareTotal();
     error DuplicateBeneficiary();
+    error RoleOverlap();
     error UnsafeTiming();
     error ModeImmutable();
     error HeartbeatStillActive();
@@ -201,8 +203,9 @@ contract LastWishVault is ReentrancyGuard {
         uint256 gracePeriod_
     ) internal {
         if (guardian_ == address(0)) revert ZeroAddress();
+        if (guardian_ == owner) revert RoleOverlap();
         uint256 length = beneficiaries_.length;
-        if (length == 0 || length != shares_.length) revert InvalidBeneficiaryCount();
+        if (length == 0 || length > MAX_BENEFICIARIES || length != shares_.length) revert InvalidBeneficiaryCount();
         uint256 minimum = testnetDemo ? MIN_DEMO_TIMING : MIN_STANDARD_TIMING;
         if (heartbeatInterval_ < minimum || gracePeriod_ < minimum) revert UnsafeTiming();
 
@@ -210,6 +213,7 @@ contract LastWishVault is ReentrancyGuard {
         for (uint256 i; i < length; ++i) {
             address beneficiary = beneficiaries_[i];
             if (beneficiary == address(0)) revert ZeroAddress();
+            if (beneficiary == owner || beneficiary == guardian_) revert RoleOverlap();
             if (shareBps[beneficiary] != 0) revert DuplicateBeneficiary();
             uint16 share = shares_[i];
             if (share == 0) revert InvalidShareTotal();

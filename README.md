@@ -13,10 +13,11 @@ LastWish is not a legal will, proof-of-death service, probate replacement, or ju
 - Deterministic allocation with final-recipient rounding and one-time pull claims
 - Injected EVM wallet connection with Base Sepolia preference and Sepolia fallback
 - Role-sensitive owner, guardian, beneficiary, and observer controls
+- Exact heartbeat/grace lifecycle deadlines with contract-gated next-action guidance
 - KeeperHub workflow registration with disabled-first simulation and explicit activation
-- KeeperHub run history reconciled against the RPC receipt, expected contract event, and final vault state
+- KeeperHub run history reconciled against its matching successful write-step log, the RPC receipt, expected contract event, and final vault state
 - AI SDK 7 Policy Copilot with Zod-structured output; it drafts timing and shares but cannot sign, submit calldata, or decide eligibility
-- Chain and KeeperHub evidence in a unified audit trail, including explicit recovery-required outcomes
+- Chain and KeeperHub evidence in a unified, timestamped audit trail with actors, amounts, blocks, gas, identifiers, and explicit recovery-required outcomes
 
 No fake balances, workflow runs, transaction hashes, or receipts are used. If credentials or deployment addresses are absent, the corresponding feature reports that it is unavailable.
 
@@ -72,7 +73,8 @@ A workflow transaction is shown as verified only when all three checks agree:
 
 1. KeeperHub records a successful run and transaction hash.
 2. An independent RPC read finds a successful receipt containing the expected vault event.
-3. The vault resolves to the expected final state.
+3. The RPC receipt contains the expected event from the target vault.
+4. The vault resolves to the expected final state.
 
 Missing or contradictory evidence is classified as recovery-required and is never blindly rebroadcast.
 

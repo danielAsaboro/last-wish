@@ -28,6 +28,8 @@ const executionSchema = z.object({
   transactionHash: hashSchema.optional(),
   transactionLink: z.string().url().optional(),
   receipts: z.array(receiptSchema).default([]),
+  createdAt: z.string().optional(),
+  completedAt: z.string().optional(),
 });
 
 const workflowExecutionSchema = z.object({
@@ -35,6 +37,7 @@ const workflowExecutionSchema = z.object({
   workflowId: z.string(),
   status: z.enum(["pending", "running", "success", "error", "cancelled"]),
   startedAt: z.string().optional(),
+  completedAt: z.string().optional(),
   transactionHashes: z.array(z.object({
     hash: hashSchema,
     nodeId: z.string(),
@@ -42,6 +45,24 @@ const workflowExecutionSchema = z.object({
     chainId: z.number().optional(),
     network: z.string().optional(),
   })).default([]),
+});
+
+const workflowLogResponseSchema = z.object({
+  execution: z.object({ id: z.string(), workflowId: z.string(), status: z.string() }).passthrough(),
+  logs: z.array(z.object({
+    id: z.string(),
+    executionId: z.string(),
+    nodeId: z.string(),
+    nodeName: z.string(),
+    nodeType: z.string(),
+    status: z.string(),
+    input: z.record(z.string(), z.unknown()),
+    output: z.record(z.string(), z.unknown()).nullable(),
+    error: z.string().nullable(),
+    duration: z.string(),
+    startedAt: z.string(),
+    completedAt: z.string().nullable(),
+  }).passthrough()),
 });
 
 export type KeeperHubChain = z.infer<typeof chainSchema>;
@@ -118,6 +139,7 @@ export function classifyKeeperHubEvidence(
     blockNumber: receipt?.blockNumber === undefined ? undefined : BigInt(receipt.blockNumber),
     gasUsed: receipt?.gasUsed === undefined ? undefined : BigInt(receipt.gasUsed),
     observedVaultStatus: ambiguous ? "RECOVERY_REQUIRED" : independentlyObservedStatus,
+    timestamp: parseTimestamp(execution.completedAt ?? execution.createdAt),
   };
 }
 
@@ -128,11 +150,25 @@ export function parseWorkflowExecutions(input: unknown): KeeperHubWorkflowExecut
   return z.array(workflowExecutionSchema).parse(candidate);
 }
 
+export function verifyKeeperHubWriteLog(input: unknown, transactionHash: Address): boolean {
+  const parsed = workflowLogResponseSchema.safeParse(input);
+  if (!parsed.success) return false;
+  return parsed.data.logs.some((log) => {
+    const hash = log.output?.transactionHash;
+    return log.nodeType === "web3/write-contract" &&
+      log.status === "success" &&
+      log.output?.success === true &&
+      typeof hash === "string" &&
+      hash.toLowerCase() === transactionHash.toLowerCase();
+  });
+}
+
 export function classifyWorkflowEvidence(
   input: unknown,
   expectedStatus: VaultStatus,
   reconciliation: {
     receiptStatus?: string;
+    keeperWriteVerified?: boolean;
     eventVerified?: boolean;
     blockNumber?: bigint;
     gasUsed?: bigint;
@@ -155,10 +191,11 @@ export function classifyWorkflowEvidence(
       verified: successfulCheck,
       observedVaultStatus: reconciliation.observedVaultStatus,
       outcome: "NO_WRITE",
+      timestamp: parseTimestamp(execution.completedAt ?? execution.startedAt),
     };
   }
 
-  const receiptVerified = reconciliation.receiptStatus === "success" && reconciliation.eventVerified === true;
+  const receiptVerified = reconciliation.keeperWriteVerified === true && reconciliation.receiptStatus === "success" && reconciliation.eventVerified === true;
   const stateVerified = reconciliation.observedVaultStatus === expectedStatus;
   const verified = execution.status === "success" && receiptVerified && stateVerified;
   const ambiguous = execution.status === "success" && (!receiptVerified || reconciliation.observedVaultStatus === undefined);
@@ -180,5 +217,12 @@ export function classifyWorkflowEvidence(
     gasUsed: reconciliation.gasUsed,
     observedVaultStatus: ambiguous ? "RECOVERY_REQUIRED" : reconciliation.observedVaultStatus,
     outcome: "TRANSACTION",
+    timestamp: parseTimestamp(execution.completedAt ?? execution.startedAt),
   };
+}
+
+function parseTimestamp(value?: string): bigint | undefined {
+  if (!value) return undefined;
+  const milliseconds = Date.parse(value);
+  return Number.isFinite(milliseconds) ? BigInt(Math.floor(milliseconds / 1_000)) : undefined;
 }
