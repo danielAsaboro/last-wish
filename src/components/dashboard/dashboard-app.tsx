@@ -9,6 +9,7 @@ import {
   parseEventLogs,
   zeroAddress,
   type Address,
+  type Hash,
 } from "viem";
 import {
   useAccount,
@@ -62,9 +63,9 @@ type LoadedVault = {
   beneficiaries: LoadedBeneficiary[];
 };
 
-type Notice = { tone: "success" | "warning" | "danger"; text: string };
+type Notice = { tone: "success" | "warning" | "danger"; text: string; source?: "refresh" | "index" };
 type RawVaultLog = Parameters<typeof buildChainAuditEvents>[0][number];
-type AuditHistoryCacheEntry = { deployedAtBlock: bigint; indexedThroughBlock: bigint; logs: RawVaultLog[] };
+type AuditHistoryCacheEntry = { deployedAtBlock: bigint; indexedThroughBlock: bigint; indexedThroughBlockHash: Hash; logs: RawVaultLog[] };
 type EvidenceRefresh = { state: "checking" | "refreshing" | "fresh" | "stale"; detail?: string };
 type VaultResolution = { state: "empty" } | { state: "loading" | "ready" | "invalid" | "unavailable"; target: Address; detail?: string };
 type VaultComposerKind = "fund" | "withdraw" | "update-policy";
@@ -79,6 +80,8 @@ type ValueComposerSession = Omit<VaultComposer, "kind"> & { kind: "fund" | "with
 const factoryAddress = process.env.NEXT_PUBLIC_LASTWISH_FACTORY_ADDRESS;
 const statusNames: VaultStatus[] = ["ACTIVE", "PENDING", "VETOED", "READY", "SETTLED"];
 const auditIndexingUnavailableCopy = "Chain audit indexing is temporarily unavailable. The last complete event range remains visible.";
+const vaultRefreshUnavailableCopy = "The latest vault refresh is temporarily unavailable. Retaining the last factory-verified snapshot.";
+const vaultVerificationUnavailableCopy = `Could not verify this address as a factory-proven LastWish vault on ${preferredChain.name}. Try again when the network is available.`;
 
 function matchingAuditHistory(
   cache: Map<string, AuditHistoryCacheEntry>,
@@ -193,6 +196,7 @@ export function DashboardApp() {
     const requestedVault = vaultAddress;
     const token = vaultRequestGuard.current.begin({ vault: requestedVault });
     let requestedBlockNumber: bigint | undefined;
+    let cacheCheckpointReadFailed = false;
     try {
       const snapshotBlock = await publicClient.getBlock({ blockTag: "latest" });
       const blockNumber = snapshotBlock.number;
@@ -267,8 +271,20 @@ export function DashboardApp() {
 
       const auditCacheKey = `${preferredChain.id}:${requestedVault.toLowerCase()}`;
       const cachedHistory = auditHistoryCache.current.get(auditCacheKey);
-      const reusableHistory = matchingAuditHistory(auditHistoryCache.current, auditCacheKey, deployedAtBlock, blockNumber);
+      const structurallyReusableHistory = matchingAuditHistory(auditHistoryCache.current, auditCacheKey, deployedAtBlock, blockNumber);
+      let reusableHistory: AuditHistoryCacheEntry | undefined;
+      if (structurallyReusableHistory) {
+        try {
+          const checkpoint = await publicClient.getBlock({ blockNumber: structurallyReusableHistory.indexedThroughBlock });
+          if (!shouldApplyVaultSnapshot(requestedVault, activeVaultRef.current) || !vaultRequestGuard.current.isCurrent(token)) return;
+          if (checkpoint.hash && checkpoint.hash === structurallyReusableHistory.indexedThroughBlockHash) reusableHistory = structurallyReusableHistory;
+        } catch (error) {
+          cacheCheckpointReadFailed = true;
+          throw error;
+        }
+      }
       const rebuildingHistory = cachedHistory !== undefined && reusableHistory === undefined;
+      if (rebuildingHistory) setAuditEvents([]);
       setAuditIndexCoverage({
         state: "indexing",
         targetBlock: blockNumber,
@@ -295,10 +311,10 @@ export function DashboardApp() {
         const candidateEvents = buildChainAuditEvents(candidateLogs, candidateTimestamps);
         if (!shouldApplyVaultSnapshot(requestedVault, activeVaultRef.current) || !vaultRequestGuard.current.isCurrent(token)) return;
         for (const block of blocks) blockTimestampCache.current.set(block.number, block.timestamp);
-        auditHistoryCache.current.set(auditCacheKey, { deployedAtBlock, indexedThroughBlock: blockNumber, logs: candidateLogs });
+        auditHistoryCache.current.set(auditCacheKey, { deployedAtBlock, indexedThroughBlock: blockNumber, indexedThroughBlockHash: snapshotBlock.hash, logs: candidateLogs });
         setAuditEvents(candidateEvents);
         setAuditIndexCoverage({ state: "fresh", indexedThroughBlock: blockNumber });
-        setNotice((current) => current?.text === auditIndexingUnavailableCopy ? null : current);
+        setNotice((current) => current?.source === "refresh" || current?.source === "index" ? null : current);
       } catch {
         if (!shouldApplyVaultSnapshot(requestedVault, activeVaultRef.current) || !vaultRequestGuard.current.isCurrent(token)) return;
         setAuditEvents(reusableHistory ? buildChainAuditEvents(reusableHistory.logs, blockTimestampCache.current) : []);
@@ -307,15 +323,25 @@ export function DashboardApp() {
           targetBlock: blockNumber,
           ...(reusableHistory ? { lastCompleteBlock: reusableHistory.indexedThroughBlock } : {}),
         });
-        setNotice({ tone: "warning", text: auditIndexingUnavailableCopy });
+        setNotice({ tone: "warning", text: auditIndexingUnavailableCopy, source: "index" });
       }
-    } catch (error) {
+    } catch {
       if (!vaultRequestGuard.current.isCurrent(token) || !shouldApplyVaultSnapshot(requestedVault, activeVaultRef.current)) return;
       const current = vaultRef.current;
       if (current && isVerifiedVaultActionTarget(requestedVault, current, factoryAddress)) {
         const targetBlock = requestedBlockNumber ?? current.observedBlockNumber;
         const auditCacheKey = `${preferredChain.id}:${requestedVault.toLowerCase()}`;
-        const reusableHistory = matchingAuditHistory(auditHistoryCache.current, auditCacheKey, current.deployedAtBlock, targetBlock);
+        const structurallyReusableHistory = matchingAuditHistory(auditHistoryCache.current, auditCacheKey, current.deployedAtBlock, targetBlock);
+        let reusableHistory: AuditHistoryCacheEntry | undefined;
+        if (structurallyReusableHistory && !cacheCheckpointReadFailed) {
+          try {
+            const checkpoint = await publicClient.getBlock({ blockNumber: structurallyReusableHistory.indexedThroughBlock });
+            if (!vaultRequestGuard.current.isCurrent(token) || !shouldApplyVaultSnapshot(requestedVault, activeVaultRef.current)) return;
+            if (checkpoint.hash && checkpoint.hash === structurallyReusableHistory.indexedThroughBlockHash) reusableHistory = structurallyReusableHistory;
+          } catch {
+            // A failed canonical checkpoint read makes this cache ineligible for reuse.
+          }
+        }
         setVaultResolution({ state: "ready", target: requestedVault });
         setAuditEvents(reusableHistory ? buildChainAuditEvents(reusableHistory.logs, blockTimestampCache.current) : []);
         setAuditIndexCoverage({
@@ -323,12 +349,12 @@ export function DashboardApp() {
           targetBlock,
           ...(reusableHistory ? { lastCompleteBlock: reusableHistory.indexedThroughBlock } : {}),
         });
-        setNotice({ tone: "warning", text: `The latest vault refresh was unavailable; retaining the last factory-verified snapshot: ${errorMessage(error)}` });
+        setNotice({ tone: "warning", text: vaultRefreshUnavailableCopy, source: "refresh" });
       } else {
         setVault(undefined);
         vaultRef.current = undefined;
-        setVaultResolution({ state: "invalid", target: requestedVault, detail: errorMessage(error) });
-        setNotice({ tone: "danger", text: `Could not verify this address as a factory-proven LastWish vault on ${preferredChain.name}: ${errorMessage(error)}` });
+        setVaultResolution({ state: "invalid", target: requestedVault, detail: vaultVerificationUnavailableCopy });
+        setNotice({ tone: "danger", text: vaultVerificationUnavailableCopy, source: "refresh" });
       }
     }
   }, [publicClient, resetAutomationEvidence, vaultAddress]);

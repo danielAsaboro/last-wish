@@ -6,6 +6,10 @@ const owner = "0x1111111111111111111111111111111111111111" as const;
 const otherAccount = "0x3333333333333333333333333333333333333333" as const;
 const replacementVault = "0x6666666666666666666666666666666666666666" as const;
 
+function rpcBlockHash(blockNumber: bigint, variant = "0") {
+  return `0x${variant}${blockNumber.toString(16).padStart(63, "0")}` as const;
+}
+
 const mocks = vi.hoisted(() => {
   process.env.NEXT_PUBLIC_LASTWISH_FACTORY_ADDRESS = "0x5555555555555555555555555555555555555555";
   return {
@@ -90,9 +94,10 @@ describe("DashboardApp async action identity", () => {
     mocks.getBlock.mockReset().mockImplementation(async (input: { blockTag?: string; blockNumber?: bigint }) => {
       if (input.blockTag === "latest") {
         latestBlockCall += 1;
-        return { number: 100n, timestamp: 1_800_000_000n };
+        return { number: 100n, timestamp: 1_800_000_000n, hash: rpcBlockHash(100n) };
       }
-      return { number: input.blockNumber ?? 100n, timestamp: 1_800_000_000n };
+      const blockNumber = input.blockNumber ?? 100n;
+      return { number: blockNumber, timestamp: 1_800_000_000n, hash: rpcBlockHash(blockNumber) };
     });
     mocks.readContract.mockReset().mockImplementation(async (input: { address?: string; functionName: string; blockNumber?: bigint }) => {
       if (mocks.invalidVault && input.address?.toLowerCase() === mocks.invalidVault.toLowerCase()) throw new Error("No contract code at this address");
@@ -264,10 +269,11 @@ describe("DashboardApp async action identity", () => {
       if (input.blockTag === "latest") {
         latestBlockCall += 1;
         return latestBlockCall === 1
-          ? { number: 25_010n, timestamp: 1_800_000_000n }
-          : { number: 25_015n, timestamp: 1_800_000_005n };
+          ? { number: 25_010n, timestamp: 1_800_000_000n, hash: rpcBlockHash(25_010n) }
+          : { number: 25_015n, timestamp: 1_800_000_005n, hash: rpcBlockHash(25_015n) };
       }
-      return { number: input.blockNumber ?? 25_010n, timestamp: 1_800_000_000n };
+      const blockNumber = input.blockNumber ?? 25_010n;
+      return { number: blockNumber, timestamp: 1_800_000_000n, hash: rpcBlockHash(blockNumber) };
     });
     mocks.readContract.mockImplementation(async (input: { functionName: string }) => {
       switch (input.functionName) {
@@ -399,6 +405,127 @@ describe("DashboardApp async action identity", () => {
     expect(screen.queryByText("Jan 15, 2027, 8:00 AM UTC")).not.toBeInTheDocument();
   });
 
+  it("clears rejected chain events while a same-height canonical rebuild is in progress", async () => {
+    const oldTransaction = `0x${"7".repeat(64)}` as const;
+    const canonicalTransaction = `0x${"8".repeat(64)}` as const;
+    const oldHash = `0x${"a".repeat(64)}` as const;
+    const canonicalHash = `0x${"b".repeat(64)}` as const;
+    const slowCanonicalHistory = deferred<Array<{
+      eventName: string;
+      blockNumber: bigint;
+      transactionHash: `0x${string}`;
+      logIndex: number;
+      args: { sender: typeof owner; amount: bigint };
+    }>>();
+    let block90TimestampCall = 0;
+    mocks.getBlock.mockImplementation(async (input: { blockTag?: string; blockNumber?: bigint }) => {
+      if (input.blockTag === "latest") {
+        latestBlockCall += 1;
+        return latestBlockCall === 1
+          ? { number: 100n, timestamp: 1_800_000_000n, hash: oldHash }
+          : { number: 100n, timestamp: 1_800_086_400n, hash: canonicalHash };
+      }
+      if (input.blockNumber === 100n) return { number: 100n, timestamp: 1_800_086_400n, hash: canonicalHash };
+      if (input.blockNumber === 90n) {
+        block90TimestampCall += 1;
+        return { number: 90n, timestamp: block90TimestampCall === 1 ? 1_800_000_000n : 1_800_086_400n };
+      }
+      return { number: input.blockNumber ?? 100n, timestamp: 1_800_000_000n };
+    });
+    mocks.getContractEvents
+      .mockResolvedValueOnce([{
+        eventName: "Heartbeat",
+        blockNumber: 90n,
+        transactionHash: oldTransaction,
+        logIndex: 0,
+        args: { owner },
+      }])
+      .mockReturnValueOnce(slowCanonicalHistory.promise);
+
+    render(<DashboardApp />);
+    expect(await screen.findByText("Owner heartbeat recorded")).toBeInTheDocument();
+    expect(screen.getByText("Jan 15, 2027, 8:00 AM UTC")).toBeInTheDocument();
+
+    await act(async () => { intervalCallbacks[0]?.(); });
+
+    expect(await screen.findByText("Indexing confirmed contract events through block 100")).toBeInTheDocument();
+    expect(screen.queryByText("Owner heartbeat recorded")).not.toBeInTheDocument();
+    expect(screen.queryByText("Jan 15, 2027, 8:00 AM UTC")).not.toBeInTheDocument();
+
+    await act(async () => {
+      slowCanonicalHistory.resolve([{
+        eventName: "Deposit",
+        blockNumber: 90n,
+        transactionHash: canonicalTransaction,
+        logIndex: 0,
+        args: { sender: owner, amount: 1n },
+      }]);
+      await slowCanonicalHistory.promise;
+    });
+
+    expect(await screen.findByText("Vault funded")).toBeInTheDocument();
+    expect(screen.getByText("Jan 16, 2027, 8:00 AM UTC")).toBeInTheDocument();
+    expect(screen.queryByText("Owner heartbeat recorded")).not.toBeInTheDocument();
+  });
+
+  it("fully rebuilds a higher-head cache when its canonical checkpoint hash changes", async () => {
+    const oldTransaction = `0x${"9".repeat(64)}` as const;
+    const canonicalTransaction = `0x${"a".repeat(64)}` as const;
+    const oldHash = `0x${"c".repeat(64)}` as const;
+    const replacementCheckpointHash = `0x${"d".repeat(64)}` as const;
+    const newHeadHash = `0x${"e".repeat(64)}` as const;
+    const slowCanonicalHistory = deferred<Array<{
+      eventName: string;
+      blockNumber: bigint;
+      transactionHash: `0x${string}`;
+      logIndex: number;
+      args: { sender: typeof owner; amount: bigint };
+    }>>();
+    mocks.getBlock.mockImplementation(async (input: { blockTag?: string; blockNumber?: bigint }) => {
+      if (input.blockTag === "latest") {
+        latestBlockCall += 1;
+        return latestBlockCall === 1
+          ? { number: 100n, timestamp: 1_800_000_000n, hash: oldHash }
+          : { number: 105n, timestamp: 1_800_000_005n, hash: newHeadHash };
+      }
+      if (input.blockNumber === 100n) return { number: 100n, timestamp: 1_800_000_001n, hash: replacementCheckpointHash };
+      return { number: input.blockNumber ?? 100n, timestamp: 1_800_086_400n };
+    });
+    mocks.getContractEvents
+      .mockResolvedValueOnce([{
+        eventName: "Heartbeat",
+        blockNumber: 90n,
+        transactionHash: oldTransaction,
+        logIndex: 0,
+        args: { owner },
+      }])
+      .mockReturnValueOnce(slowCanonicalHistory.promise);
+
+    render(<DashboardApp />);
+    expect(await screen.findByText("Owner heartbeat recorded")).toBeInTheDocument();
+
+    await act(async () => { intervalCallbacks[0]?.(); });
+
+    expect(await screen.findByText("Indexing confirmed contract events through block 105")).toBeInTheDocument();
+    expect(screen.queryByText("Owner heartbeat recorded")).not.toBeInTheDocument();
+    expect(mocks.getContractEvents.mock.calls.at(-1)?.[0]).toMatchObject({ fromBlock: 1n, toBlock: 105n });
+
+    await act(async () => {
+      slowCanonicalHistory.resolve([{
+        eventName: "Deposit",
+        blockNumber: 95n,
+        transactionHash: canonicalTransaction,
+        logIndex: 0,
+        args: { sender: owner, amount: 1n },
+      }]);
+      await slowCanonicalHistory.promise;
+    });
+
+    expect(await screen.findByText("Chain history indexed through block 105")).toBeInTheDocument();
+    expect(screen.getByText("Vault funded")).toBeInTheDocument();
+    expect(screen.queryByText("Owner heartbeat recorded")).not.toBeInTheDocument();
+  });
+
   it("rebuilds from the new deployment block when the verified snapshot no longer matches the cache", async () => {
     const oldTransaction = `0x${"e".repeat(64)}` as const;
     const replacementTransaction = `0x${"f".repeat(64)}` as const;
@@ -462,11 +589,12 @@ describe("DashboardApp async action identity", () => {
       if (input.blockTag === "latest") {
         latestBlockCall += 1;
         return latestBlockCall === 1
-          ? { number: 100n, timestamp: 1_800_000_000n }
-          : { number: 20_100n, timestamp: 1_800_020_000n };
+          ? { number: 100n, timestamp: 1_800_000_000n, hash: rpcBlockHash(100n) }
+          : { number: 20_100n, timestamp: 1_800_020_000n, hash: rpcBlockHash(20_100n) };
       }
       if (input.blockNumber === 20_000n) throw new Error("timestamp RPC unavailable");
-      return { number: input.blockNumber ?? 100n, timestamp: 1_799_999_900n + (input.blockNumber ?? 100n) };
+      const blockNumber = input.blockNumber ?? 100n;
+      return { number: blockNumber, timestamp: 1_799_999_900n + blockNumber, hash: rpcBlockHash(blockNumber) };
     });
     mocks.getContractEvents
       .mockResolvedValueOnce([{
@@ -514,11 +642,12 @@ describe("DashboardApp async action identity", () => {
     mocks.getBlock.mockImplementation(async (input: { blockTag?: string; blockNumber?: bigint }) => {
       if (input.blockTag === "latest") {
         latestBlockCall += 1;
-        if (latestBlockCall === 1) return { number: 100n, timestamp: 1_800_000_000n };
-        if (latestBlockCall === 2) return { number: 101n, timestamp: 1_800_000_001n };
+        if (latestBlockCall === 1) return { number: 100n, timestamp: 1_800_000_000n, hash: rpcBlockHash(100n) };
+        if (latestBlockCall === 2) return { number: 101n, timestamp: 1_800_000_001n, hash: rpcBlockHash(101n) };
         throw new Error("superseding snapshot unavailable");
       }
-      return { number: input.blockNumber ?? 100n, timestamp: 1_800_000_000n };
+      const blockNumber = input.blockNumber ?? 100n;
+      return { number: blockNumber, timestamp: 1_800_000_000n, hash: rpcBlockHash(blockNumber) };
     });
     mocks.getContractEvents
       .mockResolvedValueOnce([{
@@ -584,16 +713,44 @@ describe("DashboardApp async action identity", () => {
     expect(screen.queryByText("Chain history indexed through block 100")).not.toBeInTheDocument();
   });
 
+  it("uses fixed snapshot failure copy and clears it after a successful current recovery", async () => {
+    const checkpointHash = `0x${"f".repeat(64)}` as const;
+    mocks.getBlock.mockImplementation(async (input: { blockTag?: string; blockNumber?: bigint }) => {
+      if (input.blockTag === "latest") {
+        latestBlockCall += 1;
+        if (latestBlockCall === 1) return { number: 100n, timestamp: 1_800_000_000n, hash: checkpointHash };
+        if (latestBlockCall === 2) throw new Error("https://rpc.example/private-token");
+        return { number: 100n, timestamp: 1_800_000_001n, hash: checkpointHash };
+      }
+      return { number: input.blockNumber ?? 100n, timestamp: 1_800_000_000n, hash: checkpointHash };
+    });
+
+    render(<DashboardApp />);
+    expect(await screen.findByText("Chain history indexed through block 100")).toBeInTheDocument();
+
+    await act(async () => { intervalCallbacks[0]?.(); });
+
+    expect(await screen.findByText("The latest vault refresh is temporarily unavailable. Retaining the last factory-verified snapshot.")).toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent("https://rpc.example/private-token");
+
+    await act(async () => { intervalCallbacks[0]?.(); });
+
+    expect(await screen.findByText("Chain history indexed through block 100")).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText("The latest vault refresh is temporarily unavailable. Retaining the last factory-verified snapshot.")).not.toBeInTheDocument());
+    expect(document.body).not.toHaveTextContent("https://rpc.example/private-token");
+  });
+
   it("retains the last complete chain range and KeeperHub evidence when incremental indexing fails", async () => {
     const transactionHash = `0x${"a".repeat(64)}` as const;
     mocks.getBlock.mockImplementation(async (input: { blockTag?: string; blockNumber?: bigint }) => {
       if (input.blockTag === "latest") {
         latestBlockCall += 1;
         return latestBlockCall === 1
-          ? { number: 100n, timestamp: 1_800_000_000n }
-          : { number: 105n, timestamp: 1_800_000_005n };
+          ? { number: 100n, timestamp: 1_800_000_000n, hash: rpcBlockHash(100n) }
+          : { number: 105n, timestamp: 1_800_000_005n, hash: rpcBlockHash(105n) };
       }
-      return { number: input.blockNumber ?? 100n, timestamp: 1_799_999_990n };
+      const blockNumber = input.blockNumber ?? 100n;
+      return { number: blockNumber, timestamp: 1_799_999_990n, hash: rpcBlockHash(blockNumber) };
     });
     mocks.getContractEvents
       .mockResolvedValueOnce([{
