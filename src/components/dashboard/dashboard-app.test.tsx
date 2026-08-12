@@ -308,6 +308,233 @@ describe("DashboardApp async action identity", () => {
     });
   });
 
+  it("rebuilds a cache that is ahead of the current verified head", async () => {
+    const cachedTransaction = `0x${"c".repeat(64)}` as const;
+    const rebuiltTransaction = `0x${"d".repeat(64)}` as const;
+    mocks.getBlock.mockImplementation(async (input: { blockTag?: string; blockNumber?: bigint }) => {
+      if (input.blockTag === "latest") {
+        latestBlockCall += 1;
+        return latestBlockCall === 1
+          ? { number: 105n, timestamp: 1_800_000_005n }
+          : { number: 104n, timestamp: 1_800_000_004n };
+      }
+      return { number: input.blockNumber ?? 105n, timestamp: 1_799_999_900n + (input.blockNumber ?? 105n) };
+    });
+    mocks.getContractEvents
+      .mockResolvedValueOnce([{
+        eventName: "Heartbeat",
+        blockNumber: 105n,
+        transactionHash: cachedTransaction,
+        logIndex: 0,
+        args: { owner },
+      }])
+      .mockResolvedValueOnce([{
+        eventName: "Deposit",
+        blockNumber: 104n,
+        transactionHash: rebuiltTransaction,
+        logIndex: 0,
+        args: { sender: owner, amount: 1n },
+      }]);
+
+    render(<DashboardApp />);
+
+    expect(await screen.findByText("Chain history indexed through block 105")).toBeInTheDocument();
+    expect(screen.getByText("Owner heartbeat recorded")).toBeInTheDocument();
+
+    await act(async () => { intervalCallbacks[0]?.(); });
+
+    expect(await screen.findByText("Chain history indexed through block 104")).toBeInTheDocument();
+    expect(mocks.getContractEvents.mock.calls.at(-1)?.[0]).toMatchObject({ fromBlock: 1n, toBlock: 104n });
+    expect(screen.getByText("Vault funded")).toBeInTheDocument();
+    expect(screen.queryByText("Owner heartbeat recorded")).not.toBeInTheDocument();
+    expect(screen.queryByText("Chain history indexed through block 105")).not.toBeInTheDocument();
+  });
+
+  it("rebuilds from the new deployment block when the verified snapshot no longer matches the cache", async () => {
+    const oldTransaction = `0x${"e".repeat(64)}` as const;
+    const replacementTransaction = `0x${"f".repeat(64)}` as const;
+    mocks.getBlock.mockImplementation(async (input: { blockTag?: string; blockNumber?: bigint }) => {
+      if (input.blockTag === "latest") {
+        latestBlockCall += 1;
+        return latestBlockCall === 1
+          ? { number: 100n, timestamp: 1_800_000_000n }
+          : { number: 101n, timestamp: 1_800_000_001n };
+      }
+      return { number: input.blockNumber ?? 100n, timestamp: 1_799_999_900n + (input.blockNumber ?? 100n) };
+    });
+    mocks.readContract.mockImplementation(async (input: { functionName: string }) => {
+      switch (input.functionName) {
+        case "owner": return owner;
+        case "guardian": return otherAccount;
+        case "policyVersion": return 1n;
+        case "status": return 0;
+        case "beneficiaryCount": return 0n;
+        case "heartbeatInterval": return 2_592_000n;
+        case "gracePeriod": return 1_209_600n;
+        case "lastHeartbeat": return 1_799_900_000n;
+        case "pendingAt": return 0n;
+        case "deployedAtBlock": return latestBlockCall === 1 ? 1n : 7n;
+        case "vaultOf": return vault;
+        default: throw new Error(`Unexpected read ${input.functionName}`);
+      }
+    });
+    mocks.getContractEvents
+      .mockResolvedValueOnce([{
+        eventName: "Heartbeat",
+        blockNumber: 100n,
+        transactionHash: oldTransaction,
+        logIndex: 0,
+        args: { owner },
+      }])
+      .mockResolvedValueOnce([{
+        eventName: "Deposit",
+        blockNumber: 101n,
+        transactionHash: replacementTransaction,
+        logIndex: 0,
+        args: { sender: owner, amount: 1n },
+      }]);
+
+    render(<DashboardApp />);
+    expect(await screen.findByText("Chain history indexed through block 100")).toBeInTheDocument();
+
+    await act(async () => { intervalCallbacks[0]?.(); });
+
+    expect(await screen.findByText("Chain history indexed through block 101")).toBeInTheDocument();
+    expect(mocks.getContractEvents.mock.calls.at(-1)?.[0]).toMatchObject({ fromBlock: 7n, toBlock: 101n });
+    expect(screen.getByText("Vault funded")).toBeInTheDocument();
+    expect(screen.queryByText("Owner heartbeat recorded")).not.toBeInTheDocument();
+  });
+
+  it("does not commit multi-window logs when a candidate timestamp fetch fails", async () => {
+    const completeTransaction = `0x${"1".repeat(64)}` as const;
+    const firstWindowTransaction = `0x${"2".repeat(64)}` as const;
+    const secondWindowTransaction = `0x${"3".repeat(64)}` as const;
+    mocks.getBlock.mockImplementation(async (input: { blockTag?: string; blockNumber?: bigint }) => {
+      if (input.blockTag === "latest") {
+        latestBlockCall += 1;
+        return latestBlockCall === 1
+          ? { number: 100n, timestamp: 1_800_000_000n }
+          : { number: 20_100n, timestamp: 1_800_020_000n };
+      }
+      if (input.blockNumber === 20_000n) throw new Error("timestamp RPC unavailable");
+      return { number: input.blockNumber ?? 100n, timestamp: 1_799_999_900n + (input.blockNumber ?? 100n) };
+    });
+    mocks.getContractEvents
+      .mockResolvedValueOnce([{
+        eventName: "Heartbeat",
+        blockNumber: 100n,
+        transactionHash: completeTransaction,
+        logIndex: 0,
+        args: { owner },
+      }])
+      .mockResolvedValueOnce([{
+        eventName: "Deposit",
+        blockNumber: 10_000n,
+        transactionHash: firstWindowTransaction,
+        logIndex: 0,
+        args: { sender: owner, amount: 1n },
+      }])
+      .mockResolvedValueOnce([{
+        eventName: "Withdrawal",
+        blockNumber: 20_000n,
+        transactionHash: secondWindowTransaction,
+        logIndex: 0,
+        args: { actor: owner, amount: 1n },
+      }]);
+
+    render(<DashboardApp />);
+    expect(await screen.findByText("Chain history indexed through block 100")).toBeInTheDocument();
+    expect(screen.getByText("Owner heartbeat recorded")).toBeInTheDocument();
+
+    await act(async () => { intervalCallbacks[0]?.(); });
+
+    expect(await screen.findByText("Chain history is stale")).toBeInTheDocument();
+    expect(screen.getByText("Last complete through block 100. Target block 20100.")).toBeInTheDocument();
+    expect(mocks.getContractEvents.mock.calls.slice(-2).map(([input]) => ({ fromBlock: input.fromBlock, toBlock: input.toBlock }))).toEqual([
+      { fromBlock: 101n, toBlock: 10_100n },
+      { fromBlock: 10_101n, toBlock: 20_100n },
+    ]);
+    expect(screen.getByText("Owner heartbeat recorded")).toBeInTheDocument();
+    expect(screen.queryByText("Vault funded")).not.toBeInTheDocument();
+    expect(screen.queryByText("Owner withdrawal recorded")).not.toBeInTheDocument();
+  });
+
+  it("reconciles coverage when a superseding snapshot refresh fails before indexing", async () => {
+    const slowHistory = deferred<readonly []>();
+    const transactionHash = `0x${"4".repeat(64)}` as const;
+    mocks.getBlock.mockImplementation(async (input: { blockTag?: string; blockNumber?: bigint }) => {
+      if (input.blockTag === "latest") {
+        latestBlockCall += 1;
+        if (latestBlockCall === 1) return { number: 100n, timestamp: 1_800_000_000n };
+        if (latestBlockCall === 2) return { number: 101n, timestamp: 1_800_000_001n };
+        throw new Error("superseding snapshot unavailable");
+      }
+      return { number: input.blockNumber ?? 100n, timestamp: 1_800_000_000n };
+    });
+    mocks.getContractEvents
+      .mockResolvedValueOnce([{
+        eventName: "Heartbeat",
+        blockNumber: 100n,
+        transactionHash,
+        logIndex: 0,
+        args: { owner },
+      }])
+      .mockReturnValueOnce(slowHistory.promise);
+
+    render(<DashboardApp />);
+    expect(await screen.findByText("Chain history indexed through block 100")).toBeInTheDocument();
+
+    await act(async () => { intervalCallbacks[0]?.(); });
+    expect(await screen.findByText("Indexing confirmed contract events through block 101")).toBeInTheDocument();
+
+    await act(async () => { intervalCallbacks[0]?.(); });
+
+    expect(await screen.findByText("Chain history is stale")).toBeInTheDocument();
+    expect(screen.getByText("Last complete through block 100. Target block 101.")).toBeInTheDocument();
+    expect(screen.getByText("Owner heartbeat recorded")).toBeInTheDocument();
+    expect(screen.queryByText("Indexing confirmed contract events through block 101")).not.toBeInTheDocument();
+
+    await act(async () => {
+      slowHistory.resolve([]);
+      await slowHistory.promise;
+      await Promise.resolve();
+    });
+    expect(screen.getByText("Chain history is stale")).toBeInTheDocument();
+    expect(screen.queryByText("Chain history indexed through block 101")).not.toBeInTheDocument();
+  });
+
+  it("does not invent a last-complete block when a superseding refresh fails before the first cache commit", async () => {
+    const slowHistory = deferred<readonly []>();
+    mocks.getBlock.mockImplementation(async (input: { blockTag?: string; blockNumber?: bigint }) => {
+      if (input.blockTag === "latest") {
+        latestBlockCall += 1;
+        if (latestBlockCall === 1) return { number: 100n, timestamp: 1_800_000_000n };
+        throw new Error("superseding snapshot unavailable");
+      }
+      return { number: input.blockNumber ?? 100n, timestamp: 1_800_000_000n };
+    });
+    mocks.getContractEvents.mockReturnValueOnce(slowHistory.promise);
+
+    render(<DashboardApp />);
+    expect(await screen.findByText("Indexing confirmed contract events through block 100")).toBeInTheDocument();
+    expect(screen.queryByText(/last complete/i)).not.toBeInTheDocument();
+
+    await act(async () => { intervalCallbacks[0]?.(); });
+
+    expect(await screen.findByText("Chain history is stale")).toBeInTheDocument();
+    expect(screen.getByText("Target block 100. No complete chain event range is available.")).toBeInTheDocument();
+    expect(screen.queryByText(/last complete/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/no indexed events yet/i)).not.toBeInTheDocument();
+
+    await act(async () => {
+      slowHistory.resolve([]);
+      await slowHistory.promise;
+      await Promise.resolve();
+    });
+    expect(screen.getByText("Chain history is stale")).toBeInTheDocument();
+    expect(screen.queryByText("Chain history indexed through block 100")).not.toBeInTheDocument();
+  });
+
   it("retains the last complete chain range and KeeperHub evidence when incremental indexing fails", async () => {
     const transactionHash = `0x${"a".repeat(64)}` as const;
     mocks.getBlock.mockImplementation(async (input: { blockTag?: string; blockNumber?: bigint }) => {

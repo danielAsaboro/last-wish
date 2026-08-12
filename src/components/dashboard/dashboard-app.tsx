@@ -22,7 +22,7 @@ import { buildChainAuditEvents } from "@/lib/audit/chain-events";
 import { readEventHistoryInWindows } from "@/lib/audit/event-indexer";
 import { buildAuditTimeline, type ChainAuditEvent } from "@/lib/audit/timeline";
 import { factoryAbi, vaultAbi } from "@/lib/contracts/abi";
-import { AbortableRequestGeneration, isVerifiedVaultActionTarget, shouldApplyEvidenceResponse, shouldApplyVaultBlock } from "@/lib/dashboard/async-guards";
+import { AbortableRequestGeneration, isVerifiedVaultActionTarget, shouldApplyEvidenceResponse } from "@/lib/dashboard/async-guards";
 import { buildWorkflowAuthorizationMessage } from "@/lib/keeperhub/authorization";
 import { deriveAutomationHealth, type DiscoveredWorkflowRegistration } from "@/lib/keeperhub/evidence";
 import { keeperHubRegistrationSuccessCopy } from "@/lib/keeperhub/registration-copy";
@@ -80,6 +80,18 @@ const factoryAddress = process.env.NEXT_PUBLIC_LASTWISH_FACTORY_ADDRESS;
 const statusNames: VaultStatus[] = ["ACTIVE", "PENDING", "VETOED", "READY", "SETTLED"];
 const auditIndexingUnavailableCopy = "Chain audit indexing is temporarily unavailable. The last complete event range remains visible.";
 
+function matchingAuditHistory(
+  cache: Map<string, AuditHistoryCacheEntry>,
+  key: string,
+  deployedAtBlock: bigint,
+  targetBlock: bigint,
+) {
+  const history = cache.get(key);
+  return history?.deployedAtBlock === deployedAtBlock && history.indexedThroughBlock <= targetBlock
+    ? history
+    : undefined;
+}
+
 export function DashboardApp() {
   const { address: account, chainId, isConnected } = useAccount();
   const { connectors, connectAsync } = useConnect();
@@ -108,7 +120,6 @@ export function DashboardApp() {
   const vaultRef = useRef<LoadedVault | undefined>(undefined);
   const vaultRequestGuard = useRef(new AbortableRequestGeneration());
   const evidenceRequestGuard = useRef(new AbortableRequestGeneration());
-  const latestAppliedBlock = useRef<bigint | undefined>(undefined);
   const selectionEpoch = useRef(0);
   const actionEpoch = useRef(0);
   const evidenceGeneration = useRef(0);
@@ -143,7 +154,6 @@ export function DashboardApp() {
     actionEpoch.current += 1;
     vaultRequestGuard.current.invalidate();
     evidenceRequestGuard.current.invalidate();
-    latestAppliedBlock.current = undefined;
     activeVaultRef.current = address;
     setVault(undefined);
     vaultRef.current = undefined;
@@ -182,9 +192,11 @@ export function DashboardApp() {
     if (!vaultAddress || !publicClient) return;
     const requestedVault = vaultAddress;
     const token = vaultRequestGuard.current.begin({ vault: requestedVault });
+    let requestedBlockNumber: bigint | undefined;
     try {
       const snapshotBlock = await publicClient.getBlock({ blockTag: "latest" });
       const blockNumber = snapshotBlock.number;
+      requestedBlockNumber = blockNumber;
       const [owner, guardian, policyVersion, statusCode, beneficiaryCount, heartbeatInterval, gracePeriod, lastHeartbeat, pendingAt, deployedAtBlock, balance] = await Promise.all([
         publicClient.readContract({ address: requestedVault, abi: vaultAbi, functionName: "owner", blockNumber }),
         publicClient.readContract({ address: requestedVault, abi: vaultAbi, functionName: "guardian", blockNumber }),
@@ -225,7 +237,7 @@ export function DashboardApp() {
       }));
       const labelKey = `lastwish:labels:${preferredChain.id}:${requestedVault}`;
       const beneficiaries = mergeBeneficiaryLabels(chainBeneficiaries, parseBeneficiaryLabels(window.localStorage.getItem(labelKey)));
-      if (!shouldApplyVaultSnapshot(requestedVault, activeVaultRef.current) || !shouldApplyVaultBlock(token, vaultRequestGuard.current, blockNumber, latestAppliedBlock.current)) return;
+      if (!shouldApplyVaultSnapshot(requestedVault, activeVaultRef.current) || !vaultRequestGuard.current.isCurrent(token)) return;
       const loadedVault: LoadedVault = {
         address: requestedVault,
         owner,
@@ -248,17 +260,13 @@ export function DashboardApp() {
         resetAutomationEvidence();
         setComposer(null);
       }
-      latestAppliedBlock.current = blockNumber;
       vaultRef.current = loadedVault;
       setVault(loadedVault);
       setVaultResolution({ state: "ready", target: requestedVault });
       window.localStorage.setItem(`lastwish:vault:${preferredChain.id}`, requestedVault);
 
       const auditCacheKey = `${preferredChain.id}:${requestedVault.toLowerCase()}`;
-      const cachedHistory = auditHistoryCache.current.get(auditCacheKey);
-      const reusableHistory = cachedHistory?.deployedAtBlock === deployedAtBlock && cachedHistory.indexedThroughBlock <= blockNumber
-        ? cachedHistory
-        : undefined;
+      const reusableHistory = matchingAuditHistory(auditHistoryCache.current, auditCacheKey, deployedAtBlock, blockNumber);
       setAuditIndexCoverage({
         state: "indexing",
         targetBlock: blockNumber,
@@ -283,14 +291,14 @@ export function DashboardApp() {
         const blocks = await Promise.all(missingBlocks.map((blockNumber) => publicClient.getBlock({ blockNumber })));
         for (const block of blocks) candidateTimestamps.set(block.number, block.timestamp);
         const candidateEvents = buildChainAuditEvents(candidateLogs, candidateTimestamps);
-        if (!shouldApplyVaultSnapshot(requestedVault, activeVaultRef.current) || !shouldApplyVaultBlock(token, vaultRequestGuard.current, blockNumber, latestAppliedBlock.current)) return;
+        if (!shouldApplyVaultSnapshot(requestedVault, activeVaultRef.current) || !vaultRequestGuard.current.isCurrent(token)) return;
         for (const block of blocks) blockTimestampCache.current.set(block.number, block.timestamp);
         auditHistoryCache.current.set(auditCacheKey, { deployedAtBlock, indexedThroughBlock: blockNumber, logs: candidateLogs });
         setAuditEvents(candidateEvents);
         setAuditIndexCoverage({ state: "fresh", indexedThroughBlock: blockNumber });
         setNotice((current) => current?.text === auditIndexingUnavailableCopy ? null : current);
       } catch {
-        if (!shouldApplyVaultSnapshot(requestedVault, activeVaultRef.current) || !shouldApplyVaultBlock(token, vaultRequestGuard.current, blockNumber, latestAppliedBlock.current)) return;
+        if (!shouldApplyVaultSnapshot(requestedVault, activeVaultRef.current) || !vaultRequestGuard.current.isCurrent(token)) return;
         setAuditEvents(reusableHistory ? buildChainAuditEvents(reusableHistory.logs, blockTimestampCache.current) : []);
         setAuditIndexCoverage({
           state: "stale",
@@ -302,8 +310,17 @@ export function DashboardApp() {
     } catch (error) {
       if (!vaultRequestGuard.current.isCurrent(token) || !shouldApplyVaultSnapshot(requestedVault, activeVaultRef.current)) return;
       const current = vaultRef.current;
-      if (isVerifiedVaultActionTarget(requestedVault, current, factoryAddress)) {
+      if (current && isVerifiedVaultActionTarget(requestedVault, current, factoryAddress)) {
+        const targetBlock = requestedBlockNumber ?? current.observedBlockNumber;
+        const auditCacheKey = `${preferredChain.id}:${requestedVault.toLowerCase()}`;
+        const reusableHistory = matchingAuditHistory(auditHistoryCache.current, auditCacheKey, current.deployedAtBlock, targetBlock);
         setVaultResolution({ state: "ready", target: requestedVault });
+        setAuditEvents(reusableHistory ? buildChainAuditEvents(reusableHistory.logs, blockTimestampCache.current) : []);
+        setAuditIndexCoverage({
+          state: "stale",
+          targetBlock,
+          ...(reusableHistory ? { lastCompleteBlock: reusableHistory.indexedThroughBlock } : {}),
+        });
         setNotice({ tone: "warning", text: `The latest vault refresh was unavailable; retaining the last factory-verified snapshot: ${errorMessage(error)}` });
       } else {
         setVault(undefined);
