@@ -5,7 +5,8 @@ import { baseSepolia, sepolia } from "@/lib/chains";
 import { factoryAbi, vaultAbi } from "@/lib/contracts/abi";
 import { buildWorkflowAuthorizationMessage, validateWorkflowAuthorizationWindow, withWorkflowRegistrationLock } from "@/lib/keeperhub/authorization";
 import { selectRequestedExecutionChain } from "@/lib/keeperhub/client";
-import { registerVaultWorkflowPair, WorkflowRegistrationMutationError } from "@/lib/keeperhub/registration";
+import { registerVaultWorkflowPair } from "@/lib/keeperhub/registration";
+import { publicWorkflowRegistrationFailure } from "@/lib/keeperhub/registration-response";
 import { keeperHubClientFromEnv } from "@/lib/keeperhub/server";
 import { buildVaultWorkflows, parseWorkflowRegistrationKey } from "@/lib/keeperhub/workflow";
 
@@ -88,21 +89,9 @@ export async function POST(request: Request) {
     }));
     return Response.json({ configured: true, chain: selected, ...result }, { status: 201 });
   } catch (error) {
-    if (error instanceof WorkflowRegistrationMutationError) {
-      return Response.json({
-        configured: true,
-        error: error.message,
-        recoveryRequired: error.recoveryRequired,
-        mutationJournal: error.journal,
-        observedWorkflows: error.observedWorkflows,
-      }, { status: 502 });
-    }
     return Response.json({
       configured: true,
-      error: error instanceof Error ? error.message : "KeeperHub workflow registration failed",
-      recoveryRequired: false,
-      mutationJournal: [],
-      observedWorkflows: [],
+      ...publicWorkflowRegistrationFailure(error),
     }, { status: 502 });
   }
 }
