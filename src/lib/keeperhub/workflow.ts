@@ -1,3 +1,4 @@
+import { getAddress } from "viem";
 import { z } from "zod";
 
 import type { Address } from "@/lib/succession/types";
@@ -43,8 +44,8 @@ const eligibilityAbi = JSON.stringify([
 type WorkflowAction = "open" | "finalize";
 type Node = {
   id: string;
-  type: "trigger" | "action" | "condition";
-  data: { label: string; config: Record<string, string> };
+  type: "trigger" | "action";
+  data: { type: "trigger" | "action"; label: string; config: Record<string, string> };
 };
 
 export type KeeperHubWorkflowDefinition = {
@@ -55,20 +56,40 @@ export type KeeperHubWorkflowDefinition = {
   edges: Array<{ id: string; source: string; target: string; sourceHandle?: string }>;
 };
 
+export type WorkflowRegistrationKey = {
+  chainId: 84532 | 11155111;
+  vault: Address;
+  policyVersion: bigint;
+  action: WorkflowAction;
+};
+
+const registrationKeyPattern = /Registration key: lastwish:(84532|11155111):(0x[a-f0-9]{40}):([1-9][0-9]*):(open|finalize)$/;
+
+export function parseWorkflowRegistrationKey(description?: string): WorkflowRegistrationKey | undefined {
+  const match = description?.match(registrationKeyPattern);
+  if (!match) return undefined;
+  return {
+    chainId: Number(match[1]) as WorkflowRegistrationKey["chainId"],
+    vault: getAddress(match[2]),
+    policyVersion: BigInt(match[3]),
+    action: match[4] as WorkflowAction,
+  };
+}
+
 export function findWorkflowByRegistrationKey<T extends { description?: string }>(
   workflows: T[],
   definition: KeeperHubWorkflowDefinition,
 ): T | undefined {
-  const key = definition.description.match(/Registration key: (lastwish:\S+)$/)?.[1];
-  return key ? workflows.find((workflow) => workflow.description?.includes(`Registration key: ${key}`)) : undefined;
+  const key = parseWorkflowRegistrationKey(definition.description);
+  return key ? workflows.find((workflow) => registrationKeysMatch(parseWorkflowRegistrationKey(workflow.description), key)) : undefined;
 }
 
 export function findWorkflowsByRegistrationKey<T extends { description?: string }>(
   workflows: T[],
   definition: KeeperHubWorkflowDefinition,
 ): T[] {
-  const key = definition.description.match(/Registration key: (lastwish:\S+)$/)?.[1];
-  return key ? workflows.filter((workflow) => workflow.description?.includes(`Registration key: ${key}`)) : [];
+  const key = parseWorkflowRegistrationKey(definition.description);
+  return key ? workflows.filter((workflow) => registrationKeysMatch(parseWorkflowRegistrationKey(workflow.description), key)) : [];
 }
 
 export function selectCanonicalWorkflow<T extends { id: string; createdAt?: string }>(workflows: T[]): T | undefined {
@@ -82,7 +103,8 @@ export function isWorkflowForVault(
   chainId: number,
   vault: Address,
 ): boolean {
-  return workflow.description?.includes(`Registration key: lastwish:${chainId}:${vault.toLowerCase()}:`) === true;
+  const key = parseWorkflowRegistrationKey(workflow.description);
+  return key?.chainId === chainId && key.vault.toLowerCase() === vault.toLowerCase();
 }
 
 export function findObsoleteVaultWorkflows<T extends { description?: string }>(
@@ -91,9 +113,13 @@ export function findObsoleteVaultWorkflows<T extends { description?: string }>(
   vault: Address,
   currentDefinitions: KeeperHubWorkflowDefinition[],
 ): T[] {
+  const currentKeys = new Set(currentDefinitions.flatMap((definition) => {
+    const key = parseWorkflowRegistrationKey(definition.description);
+    return key ? [serializeRegistrationKey(key)] : [];
+  }));
   return workflows.filter((workflow) =>
     isWorkflowForVault(workflow, chainId, vault) &&
-    !currentDefinitions.some((definition) => findWorkflowByRegistrationKey([workflow], definition)),
+    !currentKeys.has(serializeRegistrationKey(parseWorkflowRegistrationKey(workflow.description)!)),
   );
 }
 
@@ -132,6 +158,7 @@ function buildWorkflow(
         id: "schedule",
         type: "trigger",
         data: {
+          type: "trigger",
           label: "Scheduled policy check",
           config: {
             triggerType: "Schedule",
@@ -144,6 +171,7 @@ function buildWorkflow(
         id: "check",
         type: "action",
         data: {
+          type: "action",
           label: "Check eligibility",
           config: {
             actionType: "web3/read-contract",
@@ -154,14 +182,13 @@ function buildWorkflow(
       },
       {
         id: "eligible",
-        type: "condition",
+        type: "action",
         data: {
+          type: "action",
           label: "Eligible onchain?",
           config: {
-            conditionType: "value-comparison",
-            input: "{{@check:Check eligibility.result}}",
-            operator: "==",
-            value: "true",
+            actionType: "Condition",
+            condition: "{{@check:Check eligibility.result}} == true",
           },
         },
       },
@@ -169,6 +196,7 @@ function buildWorkflow(
         id: "execute",
         type: "action",
         data: {
+          type: "action",
           label: isOpen ? "Open grace period" : "Finalize settlement",
           config: {
             actionType: "web3/write-contract",
@@ -184,4 +212,18 @@ function buildWorkflow(
       { id: "condition-execute", source: "eligible", target: "execute", sourceHandle: "true" },
     ],
   };
+}
+
+function registrationKeysMatch(
+  left: WorkflowRegistrationKey | undefined,
+  right: WorkflowRegistrationKey,
+): boolean {
+  return left?.chainId === right.chainId &&
+    left.vault.toLowerCase() === right.vault.toLowerCase() &&
+    left.policyVersion === right.policyVersion &&
+    left.action === right.action;
+}
+
+function serializeRegistrationKey(key: WorkflowRegistrationKey): string {
+  return `${key.chainId}:${key.vault.toLowerCase()}:${key.policyVersion}:${key.action}`;
 }

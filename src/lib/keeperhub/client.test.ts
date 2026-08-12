@@ -144,6 +144,21 @@ describe("KeeperHub execution evidence", () => {
     )).toMatchObject({ status: "unknown", verified: false, observedVaultStatus: "RECOVERY_REQUIRED" });
   });
 
+  it("requires recovery for every transaction whose complete reconciliation does not match", () => {
+    for (const status of ["success", "error", "cancelled", "pending", "running"] as const) {
+      expect(classifyWorkflowEvidence(
+        { id: `exec_${status}`, workflowId: "wf_open", status, transactionHashes: [{ hash, nodeId: "execute", nodeName: "Open grace" }] },
+        "PENDING",
+        { keeperWriteVerified: true, receiptStatus: "success", eventVerified: true, observedVaultStatus: "ACTIVE" },
+      )).toMatchObject({
+        executionId: `exec_${status}`,
+        status: "unknown",
+        verified: false,
+        observedVaultStatus: "RECOVERY_REQUIRED",
+      });
+    }
+  });
+
   it("does not describe a successful eligibility check with no write as a settlement transaction", () => {
     expect(classifyWorkflowEvidence(
       { id: "exec_check", workflowId: "wf_open", status: "success", transactionHashes: [] },

@@ -205,24 +205,20 @@ export function classifyWorkflowEvidence(
   const receiptVerified = reconciliation.keeperWriteVerified === true && reconciliation.receiptStatus === "success" && reconciliation.eventVerified === true;
   const stateVerified = reconciliation.observedVaultStatus === expectedStatus;
   const verified = execution.status === "success" && receiptVerified && stateVerified;
-  const ambiguous = execution.status === "success" && (!receiptVerified || reconciliation.observedVaultStatus === undefined);
+  const recoveryRequired = !verified;
 
   return {
     workflowId: execution.workflowId,
     executionId: execution.id,
     status: verified
       ? "verified"
-      : ambiguous
-        ? "unknown"
-        : execution.status === "pending" || execution.status === "running"
-          ? execution.status
-          : "failed",
+      : "unknown",
     transactionHash: transaction.hash as Address,
     verified,
     receiptStatus: reconciliation.receiptStatus,
     blockNumber: reconciliation.blockNumber,
     gasUsed: reconciliation.gasUsed,
-    observedVaultStatus: ambiguous ? "RECOVERY_REQUIRED" : reconciliation.observedVaultStatus,
+    observedVaultStatus: recoveryRequired ? "RECOVERY_REQUIRED" : reconciliation.observedVaultStatus,
     outcome: "TRANSACTION",
     timestamp: parseTimestamp(execution.completedAt ?? execution.startedAt),
   };

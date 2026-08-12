@@ -22,6 +22,7 @@ import { buildChainAuditEvents } from "@/lib/audit/chain-events";
 import { buildAuditTimeline, type ChainAuditEvent } from "@/lib/audit/timeline";
 import { factoryAbi, vaultAbi } from "@/lib/contracts/abi";
 import { buildWorkflowAuthorizationMessage } from "@/lib/keeperhub/authorization";
+import { countCurrentWorkflowRegistrations, type DiscoveredWorkflowRegistration } from "@/lib/keeperhub/evidence";
 import { buildPolicyArguments, type PolicyDraft } from "@/lib/succession/draft";
 import { labelsFromDraft, mergeBeneficiaryLabels, parseBeneficiaryLabels } from "@/lib/succession/labels";
 import { buildLifecycleSummary } from "@/lib/succession/status";
@@ -189,8 +190,6 @@ export function DashboardApp() {
   const refreshEvidence = useCallback(async (override?: WorkflowRegistration[]) => {
     if (!vaultAddress) return;
     const registrations = override ?? readWorkflowRegistrations(vaultAddress);
-    setWorkflowCount(registrations.filter((registration) => registration.policyVersion === vault?.policyVersion.toString()).length);
-    if (registrations.length === 0) { setKeeperEvidence([]); return; }
     try {
       const response = await fetch("/api/keeperhub/evidence", {
         method: "POST",
@@ -198,7 +197,11 @@ export function DashboardApp() {
         body: JSON.stringify({ chainId: preferredChain.id, vault: vaultAddress, registrations }),
       });
       if (!response.ok) return;
-      const body = await response.json() as { evidence?: Array<Omit<KeeperHubEvidence, "blockNumber" | "gasUsed" | "timestamp"> & { blockNumber?: string; gasUsed?: string; timestamp?: string }> };
+      const body = await response.json() as {
+        workflows?: DiscoveredWorkflowRegistration[];
+        evidence?: Array<Omit<KeeperHubEvidence, "blockNumber" | "gasUsed" | "timestamp"> & { blockNumber?: string; gasUsed?: string; timestamp?: string }>;
+      };
+      setWorkflowCount(countCurrentWorkflowRegistrations(body.workflows ?? []));
       setKeeperEvidence((body.evidence ?? []).map((item) => ({
         ...item,
         blockNumber: item.blockNumber === undefined ? undefined : BigInt(item.blockNumber),
@@ -208,7 +211,7 @@ export function DashboardApp() {
     } catch {
       // Preserve the last reconciled evidence until a later read succeeds.
     }
-  }, [vault?.policyVersion, vaultAddress]);
+  }, [vaultAddress]);
 
   useEffect(() => {
     if (!vaultAddress) return;

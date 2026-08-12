@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import * as workflowModule from "./workflow";
 import { buildVaultWorkflows, findObsoleteVaultWorkflows, findWorkflowByRegistrationKey, findWorkflowsByRegistrationKey, isWorkflowForVault, selectCanonicalWorkflow } from "./workflow";
 
 describe("buildVaultWorkflows", () => {
@@ -18,8 +19,22 @@ describe("buildVaultWorkflows", () => {
     ]);
     for (const workflow of workflows) {
       expect(workflow.enabled).toBe(true);
-      expect(workflow.nodes.map((node) => node.type)).toEqual(["trigger", "action", "condition", "action"]);
+      expect(workflow.nodes.map((node) => node.type)).toEqual(["trigger", "action", "action", "action"]);
+      expect(workflow.nodes.map((node) => node.data.type)).toEqual(["trigger", "action", "action", "action"]);
       expect(workflow.nodes[1].data.config.actionType).toBe("web3/read-contract");
+      expect(workflow.nodes[2]).toEqual({
+        id: "eligible",
+        type: "action",
+        data: {
+          type: "action",
+          label: "Eligible onchain?",
+          config: {
+            actionType: "Condition",
+            condition: "{{@check:Check eligibility.result}} == true",
+          },
+        },
+      });
+      expect(workflow.nodes.some((node) => (node as { type: string }).type === "condition" || "conditionType" in node.data.config)).toBe(false);
       expect(workflow.nodes[3].data.config.actionType).toBe("web3/write-contract");
       expect(workflow.edges.at(-1)).toMatchObject({ source: "eligible", target: "execute", sourceHandle: "true" });
     }
@@ -52,6 +67,50 @@ describe("buildVaultWorkflows", () => {
     expect(isWorkflowForVault({ description }, 84532, "0x1111111111111111111111111111111111111111")).toBe(true);
     expect(isWorkflowForVault({ description }, 11155111, "0x1111111111111111111111111111111111111111")).toBe(false);
     expect(isWorkflowForVault({ description }, 84532, "0x2222222222222222222222222222222222222222")).toBe(false);
+  });
+
+  it("parses only a complete canonical final registration key", () => {
+    const parseWorkflowRegistrationKey = (workflowModule as {
+      parseWorkflowRegistrationKey?: (description?: string) => unknown;
+    }).parseWorkflowRegistrationKey;
+    expect(parseWorkflowRegistrationKey).toEqual(expect.any(Function));
+    if (!parseWorkflowRegistrationKey) return;
+
+    const description = "Reads eligibility. Registration key: lastwish:84532:0x1111111111111111111111111111111111111111:3:open";
+    expect(parseWorkflowRegistrationKey(description)).toEqual({
+      chainId: 84532,
+      vault: "0x1111111111111111111111111111111111111111",
+      policyVersion: 3n,
+      action: "open",
+    });
+    for (const invalid of [
+      "Reads eligibility. Registration key: lastwish:84532:0x1111111111111111111111111111111111111111:03:open",
+      "Reads eligibility. Registration key: lastwish:84532:0x1111111111111111111111111111111111111111:0:open",
+      "Reads eligibility. Registration key: lastwish:1:0x1111111111111111111111111111111111111111:3:open",
+      "Reads eligibility. Registration key: lastwish:84532:0x1111111111111111111111111111111111111111:3:open:tampered",
+      "Reads eligibility. Registration key: lastwish:84532:0x1111111111111111111111111111111111111111:3:open extra",
+      "Reads eligibility. Registration key: lastwish:84532:0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA:3:open",
+    ]) expect(parseWorkflowRegistrationKey(invalid)).toBeUndefined();
+  });
+
+  it("excludes malformed, prefix-only, and suffixed keys consistently", () => {
+    const definition = buildVaultWorkflows({
+      chainId: 84532,
+      vault: "0x1111111111111111111111111111111111111111",
+      scheduleCron: "*/5 * * * *",
+      policyVersion: 3n,
+    })[0];
+    const suffixed = `${definition.description}:tampered`;
+    const prefixOnly = definition.description.replace(":3:open", ":3");
+    expect(findWorkflowByRegistrationKey([{ id: "wf_suffix", description: suffixed }], definition)).toBeUndefined();
+    expect(findWorkflowsByRegistrationKey([{ id: "wf_prefix", description: prefixOnly }], definition)).toEqual([]);
+    expect(isWorkflowForVault({ description: suffixed }, 84532, "0x1111111111111111111111111111111111111111")).toBe(false);
+    expect(findObsoleteVaultWorkflows(
+      [{ id: "wf_suffix", description: suffixed }, { id: "wf_prefix", description: prefixOnly }],
+      84532,
+      "0x1111111111111111111111111111111111111111",
+      [definition],
+    )).toEqual([]);
   });
 
   it("identifies prior-policy workflows that must be retired", () => {

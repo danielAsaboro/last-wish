@@ -14,9 +14,9 @@ describe("KeeperHubClient", () => {
   });
 
   it("lists organization workflows for idempotent registration", async () => {
-    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ data: [{ id: "wf_123", name: "LastWish", description: "lastwish:key" }] }));
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ data: [{ id: "wf_123", name: "LastWish", description: "lastwish:key", enabled: false }] }));
     const client = new KeeperHubClient({ apiKey: "kh_secret", fetcher });
-    await expect(client.listWorkflows()).resolves.toEqual([{ id: "wf_123", name: "LastWish", description: "lastwish:key" }]);
+    await expect(client.listWorkflows()).resolves.toEqual([{ id: "wf_123", name: "LastWish", description: "lastwish:key", enabled: false }]);
     expect(fetcher).toHaveBeenCalledWith("https://app.keeperhub.com/api/workflows", expect.any(Object));
   });
 

@@ -18,7 +18,7 @@ export type ContractCallRequest = {
   simulate?: boolean;
 };
 
-export type KeeperHubWorkflowSummary = { id: string; name: string; description?: string; createdAt?: string };
+export type KeeperHubWorkflowSummary = { id: string; name: string; description?: string; createdAt?: string; enabled?: boolean };
 
 export class KeeperHubClient {
   private readonly apiKey: string;
@@ -51,9 +51,9 @@ export class KeeperHubClient {
     if (!Array.isArray(candidate)) throw new Error("KeeperHub returned an invalid workflow list.");
     return candidate.flatMap((item) => {
       if (typeof item !== "object" || item === null) return [];
-      const { id, name, description, createdAt } = item as Record<string, unknown>;
+      const { id, name, description, createdAt, enabled } = item as Record<string, unknown>;
       return typeof id === "string" && typeof name === "string"
-        ? [{ id, name, ...(typeof description === "string" ? { description } : {}), ...(typeof createdAt === "string" ? { createdAt } : {}) }]
+        ? [{ id, name, ...(typeof description === "string" ? { description } : {}), ...(typeof createdAt === "string" ? { createdAt } : {}), ...(typeof enabled === "boolean" ? { enabled } : {}) }]
         : [];
     });
   }
