@@ -302,4 +302,27 @@ describe("DashboardView", () => {
     expect(screen.getByRole("status")).toHaveTextContent(/waiting for onchain confirmation/i);
     expect(screen.getByRole("link", { name: /track pending transaction/i })).toHaveAttribute("href", `https://sepolia.basescan.org/tx/${transactionHash}`);
   });
+
+  it("keeps an ambiguous submitted transaction visible and blocks conflicting writes", () => {
+    const onReconcileWalletTransaction = vi.fn();
+    const transactionHash = `0x${"c".repeat(64)}` as const;
+    render(<DashboardView
+      {...baseProps}
+      walletWritesBlocked
+      walletRecovery={{
+        label: "Heartbeat",
+        target: baseProps.vaultAddress as `0x${string}`,
+        transactionHash,
+        reconciling: false,
+      }}
+      onReconcileWalletTransaction={onReconcileWalletTransaction}
+    />);
+
+    expect(screen.getByRole("heading", { name: /transaction needs reconciliation/i })).toBeInTheDocument();
+    expect(screen.getByText(/do not submit another vault transaction/i)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /inspect submitted transaction/i })).toHaveAttribute("href", `https://sepolia.basescan.org/tx/${transactionHash}`);
+    expect(screen.getByRole("button", { name: /record heartbeat/i })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: /check receipt again/i }));
+    expect(onReconcileWalletTransaction).toHaveBeenCalledOnce();
+  });
 });

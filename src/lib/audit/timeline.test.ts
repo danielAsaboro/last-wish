@@ -130,4 +130,25 @@ describe("buildAuditTimeline", () => {
       detail: "KeeperHub completed the workflow without an onchain write; the vault remained ACTIVE.",
     });
   });
+
+  it("includes an unresolved wallet submission as recovery evidence", () => {
+    const transactionHash = `0x${"b".repeat(64)}` as const;
+    const timeline = buildAuditTimeline({
+      chainEvents: [],
+      keeperHub: [],
+      walletRecovery: {
+        label: "Withdraw funds",
+        transactionHash,
+        target: "0x2222222222222222222222222222222222222222",
+      },
+    });
+
+    expect(timeline[0]).toMatchObject({
+      source: "wallet",
+      title: "Wallet transaction needs reconciliation",
+      tone: "danger",
+      transactionHash,
+      action: "Do not submit another write to this vault until this hash has a terminal receipt.",
+    });
+  });
 });

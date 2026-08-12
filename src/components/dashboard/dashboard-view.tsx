@@ -10,6 +10,7 @@ import type { Address, VaultStatus } from "@/lib/succession/types";
 export type DashboardRole = "owner" | "guardian" | "beneficiary" | "observer";
 export type DashboardAction = "heartbeat" | "update-policy" | "withdraw" | "veto" | "claim" | "fund" | "register";
 export type WalletTransactionProgress = { label: string; stage: "AWAITING_SIGNATURE" | "CONFIRMING"; target?: Address; transactionHash?: Address };
+export type WalletTransactionRecovery = { label: string; target: Address; transactionHash: Address; reconciling: boolean };
 export type AuditIndexCoverage =
   | { state: "idle" }
   | { state: "indexing"; targetBlock: bigint; lastCompleteBlock?: bigint }
@@ -42,10 +43,13 @@ export type DashboardViewProps = {
   evidenceCoverage?: { scope: "recent_keeperhub_window_only"; workflows: DiscoveredWorkflowRegistration[] };
   lifecycle?: LifecycleSummary;
   transactionProgress?: WalletTransactionProgress;
+  walletRecovery?: WalletTransactionRecovery;
+  walletWritesBlocked?: boolean;
   onConnect(): void;
   onSwitchNetwork(): void;
   onRefreshEvidence?(): void;
   onRefreshReadiness?(): void;
+  onReconcileWalletTransaction?(): void;
   onAction(action: DashboardAction): void;
   children?: React.ReactNode;
 };
@@ -94,6 +98,7 @@ export function DashboardView(props: DashboardViewProps) {
 
       {props.message && <div className={`notice ${props.message.tone}`} role="status">{props.message.text}</div>}
       {props.transactionProgress && <TransactionProgress progress={props.transactionProgress} chainName={props.chainName} />}
+      {props.walletRecovery && <WalletRecoveryCard recovery={props.walletRecovery} chainName={props.chainName} onReconcile={props.onReconcileWalletTransaction} />}
       {props.children}
 
       {vaultResolution === "loading" && props.vaultAddress ? <VaultResolutionState
@@ -292,10 +297,10 @@ function LifecycleCard({ lifecycle }: { lifecycle: LifecycleSummary }) {
   </section>;
 }
 
-function ActionButton({ action, label, pendingAction, transactionProgress, onAction }: DashboardViewProps & { action: DashboardAction; label: string }) {
+function ActionButton({ action, label, pendingAction, transactionProgress, walletWritesBlocked, onAction }: DashboardViewProps & { action: DashboardAction; label: string }) {
   const pending = pendingAction === action;
   const pendingLabel = transactionProgress?.stage === "AWAITING_SIGNATURE" ? "Confirm in wallet…" : transactionProgress?.stage === "CONFIRMING" ? "Confirming onchain…" : "Working…";
-  return <button disabled={pendingAction !== null} onClick={() => onAction(action)}>{pending ? pendingLabel : label}<span aria-hidden="true">→</span></button>;
+  return <button disabled={pendingAction !== null || walletWritesBlocked} onClick={() => onAction(action)}>{pending ? pendingLabel : label}<span aria-hidden="true">→</span></button>;
 }
 
 function TransactionProgress({ progress, chainName }: { progress: WalletTransactionProgress; chainName: string }) {
@@ -306,6 +311,18 @@ function TransactionProgress({ progress, chainName }: { progress: WalletTransact
     <ol aria-label="Transaction stages"><li className="active">1 · Wallet approval</li><li className={confirming ? "active" : ""}>2 · Onchain confirmation</li><li>3 · State refresh</li></ol>
     {progress.transactionHash && <a href={`${explorerBase(chainName)}/tx/${progress.transactionHash}`} target="_blank" rel="noreferrer">Track pending transaction ↗</a>}
   </div>;
+}
+
+function WalletRecoveryCard({ recovery, chainName, onReconcile }: { recovery: WalletTransactionRecovery; chainName: string; onReconcile?: () => void }) {
+  return <section className="transaction-recovery" role="alert">
+    <div><p className="eyebrow">Submitted hash retained</p><h2>Transaction needs reconciliation</h2></div>
+    <p>The wallet returned a hash, but LastWish could not verify a terminal receipt. Do not submit another vault transaction for this target until the existing hash is reconciled.</p>
+    <dl><div><dt>Action</dt><dd>{recovery.label}</dd></div><div><dt>Target</dt><dd><code>{recovery.target}</code></dd></div><div><dt>Transaction</dt><dd><code>{recovery.transactionHash}</code></dd></div></dl>
+    <div className="transaction-recovery-actions">
+      <a href={`${explorerBase(chainName)}/tx/${recovery.transactionHash}`} target="_blank" rel="noreferrer">Inspect submitted transaction ↗</a>
+      {onReconcile && <button type="button" disabled={recovery.reconciling} onClick={onReconcile}>{recovery.reconciling ? "Checking receipt…" : "Check receipt again"}</button>}
+    </div>
+  </section>;
 }
 
 function VaultResolutionState({ title, detail, address, error }: { title: string; detail: string; address: string; error?: string }) {

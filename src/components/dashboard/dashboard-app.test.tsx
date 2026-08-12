@@ -1,5 +1,8 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { encodeAbiParameters, encodeEventTopics, zeroAddress } from "viem";
+
+import { factoryAbi } from "@/lib/contracts/abi";
 
 const vault = "0x2222222222222222222222222222222222222222" as const;
 const owner = "0x1111111111111111111111111111111111111111" as const;
@@ -16,11 +19,13 @@ const mocks = vi.hoisted(() => {
     account: "0x1111111111111111111111111111111111111111" as `0x${string}`,
     chainId: 84532,
     invalidVault: undefined as string | undefined,
+    discoveredVault: "0x2222222222222222222222222222222222222222" as `0x${string}`,
     getBlock: vi.fn(),
     readContract: vi.fn(),
     getBalance: vi.fn(),
     getContractEvents: vi.fn(),
     waitForTransactionReceipt: vi.fn(),
+    getTransactionReceipt: vi.fn(),
     signMessage: vi.fn(),
     writeContract: vi.fn(),
     sendTransaction: vi.fn(),
@@ -36,6 +41,7 @@ vi.mock("wagmi", () => {
     getBalance: mocks.getBalance,
     getContractEvents: mocks.getContractEvents,
     waitForTransactionReceipt: mocks.waitForTransactionReceipt,
+    getTransactionReceipt: mocks.getTransactionReceipt,
   };
   return {
     useAccount: () => ({ address: mocks.account, chainId: mocks.chainId, isConnected: true }),
@@ -72,11 +78,13 @@ describe("DashboardApp async action identity", () => {
 
   beforeEach(() => {
     window.localStorage.clear();
+    window.sessionStorage.clear();
     window.localStorage.setItem("lastwish:vault:84532", vault);
     Object.defineProperty(document, "hidden", { configurable: true, value: false });
     mocks.account = owner;
     mocks.chainId = 84532;
     mocks.invalidVault = undefined;
+    mocks.discoveredVault = vault;
     latestBlockCall = 0;
     nextIntervalId = 0;
     activeIntervals = [];
@@ -112,13 +120,14 @@ describe("DashboardApp async action identity", () => {
         case "lastHeartbeat": return 1_799_900_000n;
         case "pendingAt": return 0n;
         case "deployedAtBlock": return 1n;
-        case "vaultOf": return vault;
+        case "vaultOf": return mocks.discoveredVault;
         default: throw new Error(`Unexpected read ${input.functionName}`);
       }
     });
     mocks.getBalance.mockReset().mockResolvedValue(1n);
     mocks.getContractEvents.mockReset().mockResolvedValue([]);
     mocks.waitForTransactionReceipt.mockReset();
+    mocks.getTransactionReceipt.mockReset();
     mocks.signMessage.mockReset();
     mocks.writeContract.mockReset();
     mocks.sendTransaction.mockReset();
@@ -159,6 +168,148 @@ describe("DashboardApp async action identity", () => {
     await waitFor(() => expect(screen.queryByText(/confirm authorize keeperhub setup/i)).not.toBeInTheDocument());
     expect(fetchMock.mock.calls.filter(([input]) => String(input).includes("/api/keeperhub/workflows"))).toHaveLength(0);
     expect(screen.queryByText(/registered \d+ workflows|condition-gated|exact enabled workflow pair/i)).not.toBeInTheDocument();
+  });
+
+  it("retains an ambiguous wallet hash, blocks another write, and reconciles it read-only", async () => {
+    const transactionHash = `0x${"c".repeat(64)}` as const;
+    mocks.writeContract.mockResolvedValue(transactionHash);
+    mocks.waitForTransactionReceipt.mockRejectedValue(new Error("https://rpc.example/private-token timed out"));
+    mocks.getTransactionReceipt.mockResolvedValue({ status: "success", blockNumber: 121n, to: vault, logs: [] });
+    render(<DashboardApp />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /record heartbeat/i }));
+
+    expect(await screen.findByRole("heading", { name: /transaction needs reconciliation/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /record heartbeat/i })).toBeDisabled();
+    expect(screen.getByLabelText(/vault address/i)).toBeEnabled();
+    expect(document.body).not.toHaveTextContent("private-token");
+    expect(screen.getByRole("link", { name: /inspect submitted transaction/i })).toHaveAttribute("href", `https://sepolia.basescan.org/tx/${transactionHash}`);
+    expect(window.sessionStorage.getItem("lastwish:wallet-recovery:84532")).toContain(transactionHash);
+
+    fireEvent.click(screen.getByRole("button", { name: /check receipt again/i }));
+
+    await waitFor(() => expect(screen.queryByRole("heading", { name: /transaction needs reconciliation/i })).not.toBeInTheDocument());
+    expect(screen.getByText(/heartbeat confirmed in block 121/i)).toBeInTheDocument();
+    expect(mocks.getTransactionReceipt).toHaveBeenCalledWith({ hash: transactionHash });
+    expect(mocks.waitForTransactionReceipt).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: /record heartbeat/i })).toBeEnabled();
+    expect(window.sessionStorage.getItem("lastwish:wallet-recovery:84532")).toBeNull();
+  });
+
+  it("persists the submitted hash before receipt confirmation completes", async () => {
+    const transactionHash = `0x${"9".repeat(64)}` as const;
+    const receipt = deferred<{ status: "success"; blockNumber: bigint; to: typeof vault; logs: [] }>();
+    mocks.writeContract.mockResolvedValue(transactionHash);
+    mocks.waitForTransactionReceipt.mockReturnValue(receipt.promise);
+    render(<DashboardApp />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /record heartbeat/i }));
+
+    await waitFor(() => expect(window.sessionStorage.getItem("lastwish:wallet-recovery:84532")).toContain(transactionHash));
+    expect(screen.getByRole("link", { name: /track pending transaction/i })).toHaveAttribute("href", `https://sepolia.basescan.org/tx/${transactionHash}`);
+
+    await act(async () => {
+      receipt.resolve({ status: "success", blockNumber: 120n, to: vault, logs: [] });
+      await receipt.promise;
+    });
+    await waitFor(() => expect(window.sessionStorage.getItem("lastwish:wallet-recovery:84532")).toBeNull());
+  });
+
+  it("uses fixed wallet copy when a signature is rejected before submission", async () => {
+    mocks.writeContract.mockRejectedValue(Object.assign(new Error("Rejected at https://wallet.example/private-token"), { code: 4001 }));
+    render(<DashboardApp />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /record heartbeat/i }));
+
+    expect(await screen.findByText(/wallet request was rejected/i)).toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent("private-token");
+    expect(screen.queryByRole("heading", { name: /transaction needs reconciliation/i })).not.toBeInTheDocument();
+  });
+
+  it("treats a mined revert as terminal and allows a reviewed retry", async () => {
+    const transactionHash = `0x${"d".repeat(64)}` as const;
+    mocks.writeContract.mockResolvedValue(transactionHash);
+    mocks.waitForTransactionReceipt.mockResolvedValue({ status: "reverted", blockNumber: 122n, to: vault, logs: [] });
+    render(<DashboardApp />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /record heartbeat/i }));
+
+    expect(await screen.findByText(/transaction reverted in block 122/i)).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: /transaction needs reconciliation/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /record heartbeat/i })).toBeEnabled();
+  });
+
+  it("applies the same submitted-hash recovery gate to native ETH funding", async () => {
+    const transactionHash = `0x${"e".repeat(64)}` as const;
+    mocks.sendTransaction.mockResolvedValue(transactionHash);
+    mocks.waitForTransactionReceipt.mockRejectedValue(new Error("receipt timeout"));
+    render(<DashboardApp />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /fund vault/i }));
+    fireEvent.change(screen.getByLabelText(/amount in eth/i), { target: { value: "0.01" } });
+    fireEvent.click(screen.getByRole("button", { name: /review in wallet/i }));
+
+    expect(await screen.findByRole("heading", { name: /transaction needs reconciliation/i })).toBeInTheDocument();
+    expect(screen.getByText(/fund vault was submitted/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /record heartbeat/i })).toBeDisabled();
+    expect(screen.getByLabelText(/amount in eth/i)).toBeDisabled();
+  });
+
+  it("does not activate a confirmed deployment after the connected account changes", async () => {
+    const beneficiaryOne = replacementVault;
+    const beneficiaryTwo = "0x7777777777777777777777777777777777777777" as const;
+    const transactionHash = `0x${"f".repeat(64)}` as const;
+    const receipt = deferred<{
+      status: "success";
+      blockNumber: bigint;
+      to: typeof mocks.discoveredVault;
+      transactionHash: typeof transactionHash;
+      logs: Array<{ address: typeof mocks.discoveredVault; topics: readonly `0x${string}`[]; data: `0x${string}`; blockNumber: bigint; transactionHash: typeof transactionHash; logIndex: number; transactionIndex: number; blockHash: `0x${string}`; removed: boolean }>;
+    }>();
+    window.localStorage.clear();
+    mocks.discoveredVault = zeroAddress;
+    mocks.writeContract.mockResolvedValue(transactionHash);
+    mocks.waitForTransactionReceipt.mockReturnValue(receipt.promise);
+    const { rerender } = render(<DashboardApp />);
+
+    fireEvent.change(await screen.findByLabelText(/guardian address/i), { target: { value: otherAccount } });
+    fireEvent.change(screen.getByLabelText(/beneficiary 1 label/i), { target: { value: "Ada" } });
+    fireEvent.change(screen.getByLabelText(/beneficiary 1 address/i), { target: { value: beneficiaryOne } });
+    fireEvent.change(screen.getByLabelText(/beneficiary 2 label/i), { target: { value: "Lin" } });
+    fireEvent.change(screen.getByLabelText(/beneficiary 2 address/i), { target: { value: beneficiaryTwo } });
+    fireEvent.click(screen.getByRole("button", { name: /continue/i }));
+    fireEvent.click(screen.getByRole("button", { name: /continue/i }));
+    fireEvent.click(screen.getByRole("button", { name: /deploy vault/i }));
+    await waitFor(() => expect(mocks.writeContract).toHaveBeenCalledOnce());
+
+    mocks.account = otherAccount;
+    rerender(<DashboardApp />);
+    const trustedFactory = "0x5555555555555555555555555555555555555555" as const;
+    await act(async () => {
+      receipt.resolve({
+        status: "success",
+        blockNumber: 123n,
+        to: trustedFactory,
+        transactionHash,
+        logs: [{
+          address: trustedFactory,
+          topics: encodeEventTopics({ abi: factoryAbi, eventName: "VaultCreated", args: { owner, vault } }) as readonly `0x${string}`[],
+          data: encodeAbiParameters([{ type: "bool" }], [false]),
+          blockNumber: 123n,
+          transactionHash,
+          logIndex: 0,
+          transactionIndex: 0,
+          blockHash: rpcBlockHash(123n),
+          removed: false,
+        }],
+      });
+      await receipt.promise;
+    });
+
+    expect(await screen.findByRole("heading", { name: /transaction needs reconciliation/i })).toBeInTheDocument();
+    expect(screen.getByText(/connected wallet changed before the deployment could be attached/i)).toBeInTheDocument();
+    expect(window.localStorage.getItem("lastwish:vault:84532")).toBeNull();
+    expect(screen.queryByText(new RegExp(vault, "i"))).not.toBeInTheDocument();
   });
 
   it("discards a late registration response after the connected account changes", async () => {

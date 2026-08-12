@@ -15,7 +15,7 @@ export type ChainAuditEvent = {
 
 export type AuditTimelineItem = {
   id: string;
-  source: "chain" | "keeperhub";
+  source: "chain" | "keeperhub" | "wallet";
   title: string;
   detail: string;
   tone: "neutral" | "success" | "warning" | "danger";
@@ -45,6 +45,7 @@ const chainTitles: Record<ChainAuditEvent["type"], string> = {
 export function buildAuditTimeline(input: {
   chainEvents: ChainAuditEvent[];
   keeperHub: KeeperHubEvidence[];
+  walletRecovery?: { label: string; transactionHash: Address; target: Address };
 }): AuditTimelineItem[] {
   const chainItems = input.chainEvents.map<AuditTimelineItem>((event) => ({
       id: event.id,
@@ -130,7 +131,17 @@ export function buildAuditTimeline(input: {
     };
   });
 
-  return [...chainItems, ...keeperItems].sort((left, right) => {
+  const walletItems: AuditTimelineItem[] = input.walletRecovery ? [{
+    id: `wallet-${input.walletRecovery.transactionHash}`,
+    source: "wallet",
+    title: "Wallet transaction needs reconciliation",
+    detail: `${input.walletRecovery.label} was submitted to ${shorten(input.walletRecovery.target)}, but its terminal receipt is not verified.`,
+    tone: "danger",
+    transactionHash: input.walletRecovery.transactionHash,
+    action: "Do not submit another write to this vault until this hash has a terminal receipt.",
+  }] : [];
+
+  return [...chainItems, ...keeperItems, ...walletItems].sort((left, right) => {
     if (left.timestamp === undefined) return 1;
     if (right.timestamp === undefined) return -1;
     return Number(right.timestamp - left.timestamp);
