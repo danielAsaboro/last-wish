@@ -23,6 +23,7 @@ import { buildAuditTimeline, type ChainAuditEvent } from "@/lib/audit/timeline";
 import { factoryAbi, vaultAbi } from "@/lib/contracts/abi";
 import { buildWorkflowAuthorizationMessage } from "@/lib/keeperhub/authorization";
 import { deriveAutomationHealth, type DiscoveredWorkflowRegistration } from "@/lib/keeperhub/evidence";
+import { canAuthorizeKeeperHubRegistration, requestKeeperHubRegistrationSignature, type CurrentVaultEvidence } from "@/lib/keeperhub/registration-gate";
 import { readinessNextSteps, type KeeperHubReadiness } from "@/lib/keeperhub/readiness";
 import { buildPolicyArguments, type PolicyDraft } from "@/lib/succession/draft";
 import { labelsFromDraft, mergeBeneficiaryLabels, parseBeneficiaryLabels } from "@/lib/succession/labels";
@@ -55,6 +56,7 @@ type LoadedVault = {
 };
 
 type Notice = { tone: "success" | "warning" | "danger"; text: string };
+type EvidenceRefresh = { state: "checking" | "refreshing" | "fresh" | "stale"; detail?: string };
 const factoryAddress = process.env.NEXT_PUBLIC_LASTWISH_FACTORY_ADDRESS;
 const statusNames: VaultStatus[] = ["ACTIVE", "PENDING", "VETOED", "READY", "SETTLED"];
 
@@ -71,21 +73,38 @@ export function DashboardApp() {
   const [discoveredWorkflows, setDiscoveredWorkflows] = useState<DiscoveredWorkflowRegistration[]>([]);
   const [executionEvidenceScope, setExecutionEvidenceScope] = useState<"recent_keeperhub_window_only">("recent_keeperhub_window_only");
   const [readiness, setReadiness] = useState<KeeperHubReadiness>({ status: "checking", nextStep: readinessNextSteps.checking });
-  const [evidenceRefresh, setEvidenceRefresh] = useState<{ state: "checking" | "refreshing" | "fresh" | "stale"; detail?: string }>({ state: "checking" });
+  const [evidenceRefresh, setEvidenceRefresh] = useState<EvidenceRefresh>({ state: "checking" });
+  const [lastSuccessfulEvidenceVault, setLastSuccessfulEvidenceVault] = useState<Address>();
   const [walletAvailability, setWalletAvailability] = useState<"checking" | "available" | "unavailable">("checking");
   const [pendingAction, setPendingAction] = useState<DashboardAction | null>(null);
   const [composer, setComposer] = useState<"fund" | "withdraw" | "update-policy" | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [transactionProgress, setTransactionProgress] = useState<WalletTransactionProgress>();
   const blockTimestampCache = useRef(new Map<bigint, bigint>());
+  const activeVaultRef = useRef<Address | undefined>(undefined);
+
+  const resetAutomationEvidence = useCallback(() => {
+    setKeeperEvidence([]);
+    setDiscoveredWorkflows([]);
+    setExecutionEvidenceScope("recent_keeperhub_window_only");
+    setLastSuccessfulEvidenceVault(undefined);
+    setEvidenceRefresh({ state: "checking" });
+  }, []);
+
+  const activateVault = useCallback((address: Address) => {
+    if (activeVaultRef.current?.toLowerCase() === address.toLowerCase()) return;
+    activeVaultRef.current = address;
+    resetAutomationEvidence();
+    setVaultAddress(address);
+  }, [resetAutomationEvidence]);
 
   useEffect(() => {
     const restore = window.setTimeout(() => {
       const saved = window.localStorage.getItem(`lastwish:vault:${preferredChain.id}`);
-      if (saved && isAddress(saved)) setVaultAddress(getAddress(saved));
+      if (saved && isAddress(saved)) activateVault(getAddress(saved));
     }, 0);
     return () => window.clearTimeout(restore);
-  }, []);
+  }, [activateVault]);
 
   useEffect(() => {
     let cancelled = false;
@@ -196,16 +215,17 @@ export function DashboardApp() {
           functionName: "vaultOf",
           args: [account],
         });
-        if (existing !== zeroAddress) setVaultAddress(existing);
+        if (existing !== zeroAddress) activateVault(existing);
       } catch {
         // A missing or incompatible factory is surfaced only when the user tries to deploy.
       }
     }, 0);
     return () => window.clearTimeout(discovery);
-  }, [account, publicClient, vaultAddress]);
+  }, [account, activateVault, publicClient, vaultAddress]);
 
   const refreshEvidence = useCallback(async () => {
     if (!vaultAddress) return;
+    const requestedVault = vaultAddress;
     setEvidenceRefresh({ state: "refreshing" });
     try {
       const response = await fetch("/api/keeperhub/evidence", {
@@ -219,6 +239,7 @@ export function DashboardApp() {
         executionEvidenceScope?: "recent_keeperhub_window_only";
         evidence?: Array<Omit<KeeperHubEvidence, "blockNumber" | "gasUsed" | "timestamp"> & { blockNumber?: string; gasUsed?: string; timestamp?: string }>;
       };
+      if (activeVaultRef.current?.toLowerCase() !== requestedVault.toLowerCase()) return;
       setDiscoveredWorkflows(body.workflows ?? []);
       setExecutionEvidenceScope(body.executionEvidenceScope ?? "recent_keeperhub_window_only");
       setKeeperEvidence((body.evidence ?? []).map((item) => ({
@@ -227,11 +248,16 @@ export function DashboardApp() {
         gasUsed: item.gasUsed === undefined ? undefined : BigInt(item.gasUsed),
         timestamp: item.timestamp === undefined ? undefined : BigInt(item.timestamp),
       })));
+      setLastSuccessfulEvidenceVault(requestedVault);
       setEvidenceRefresh({ state: "fresh", detail: "Evidence refreshed from KeeperHub's recent provider window." });
     } catch {
-      setEvidenceRefresh({ state: "stale", detail: "Evidence refresh failed. Showing the last reconciled evidence; retrying would not rebroadcast a transaction." });
+      if (activeVaultRef.current?.toLowerCase() !== requestedVault.toLowerCase()) return;
+      const hasPriorSuccess = lastSuccessfulEvidenceVault?.toLowerCase() === requestedVault.toLowerCase();
+      setEvidenceRefresh(hasPriorSuccess
+        ? { state: "stale", detail: "Evidence refresh failed. Showing the last reconciled evidence; refresh is read-only and will not rebroadcast a transaction." }
+        : { state: "stale", detail: "Evidence could not be reconciled yet. Registration remains unavailable until a successful current-vault refresh." });
     }
-  }, [vaultAddress]);
+  }, [lastSuccessfulEvidenceVault, vaultAddress]);
 
   const refreshReadiness = useCallback(async () => {
     setReadiness({ status: "checking", nextStep: readinessNextSteps.checking });
@@ -270,6 +296,20 @@ export function DashboardApp() {
   const auditItems = useMemo(() => buildAuditTimeline({ chainEvents: auditEvents, keeperHub: keeperEvidence }), [auditEvents, keeperEvidence]);
   const lifecycle = useMemo(() => vault ? buildLifecycleSummary(vault, vault.observedAt) : undefined, [vault]);
   const automationHealth = useMemo(() => deriveAutomationHealth(discoveredWorkflows), [discoveredWorkflows]);
+  const currentVaultEvidence = useMemo<CurrentVaultEvidence>(() => {
+    const hasCurrentSuccess = Boolean(vaultAddress && lastSuccessfulEvidenceVault?.toLowerCase() === vaultAddress.toLowerCase());
+    if (!hasCurrentSuccess) return evidenceRefresh.state === "refreshing" ? "refreshing" : "unknown";
+    if (evidenceRefresh.state === "fresh") return "fresh";
+    if (evidenceRefresh.state === "refreshing") return "refreshing";
+    if (evidenceRefresh.state === "stale") return "stale_with_success";
+    return "unknown";
+  }, [evidenceRefresh.state, lastSuccessfulEvidenceVault, vaultAddress]);
+  const canRegisterAutomation = canAuthorizeKeeperHubRegistration({
+    activeOwner: role === "owner",
+    readiness: readiness.status,
+    currentVaultEvidence,
+    automation: automationHealth.state,
+  });
 
   async function executeSimpleAction(action: Exclude<DashboardAction, "fund" | "withdraw" | "update-policy" | "register">) {
     if (!walletClient || !vaultAddress || !publicClient) return;
@@ -313,7 +353,7 @@ export function DashboardApp() {
       const [created] = parseEventLogs({ abi: factoryAbi, eventName: "VaultCreated", logs: receipt.logs });
       if (!created) throw new Error("The factory receipt did not contain VaultCreated.");
       const address = created.args.vault;
-      setVaultAddress(address);
+      activateVault(address);
       window.localStorage.setItem(`lastwish:vault:${preferredChain.id}`, address);
       window.localStorage.setItem(`lastwish:labels:${preferredChain.id}:${address}`, JSON.stringify(labelsFromDraft(draft.beneficiaries)));
       setNotice({ tone: "success", text: `Vault ${address} deployed and confirmed in block ${receipt.blockNumber}.` });
@@ -331,7 +371,7 @@ export function DashboardApp() {
       setTransactionProgress({ label: "Update policy", stage: "CONFIRMING", transactionHash: hash });
       const receipt = assertSuccessfulReceipt(await publicClient.waitForTransactionReceipt({ hash }));
       window.localStorage.setItem(`lastwish:labels:${preferredChain.id}:${vaultAddress}`, JSON.stringify(labelsFromDraft(draft.beneficiaries)));
-      setDiscoveredWorkflows([]);
+      resetAutomationEvidence();
       setComposer(null); setNotice({ tone: "success", text: `Policy update confirmed in block ${receipt.blockNumber}. The heartbeat clock reset.` });
       await refreshVault();
     } catch (error) { setNotice({ tone: "danger", text: errorMessage(error) }); }
@@ -358,8 +398,18 @@ export function DashboardApp() {
 
   async function registerKeeperHub() {
     if (!vaultAddress || !vault || !walletClient || !account || vault.owner.toLowerCase() !== account.toLowerCase()) return;
-    if (readiness.status !== "ready") {
-      setNotice({ tone: "warning", text: readiness.nextStep });
+    if (!canAuthorizeKeeperHubRegistration({
+      activeOwner: true,
+      readiness: readiness.status,
+      currentVaultEvidence,
+      automation: automationHealth.state,
+    })) {
+      setNotice({
+        tone: "warning",
+        text: readiness.status !== "ready"
+          ? readiness.nextStep
+          : "Reconcile current-vault KeeperHub evidence before authorizing a repair signature.",
+      });
       return;
     }
     setPendingAction("register");
@@ -367,7 +417,12 @@ export function DashboardApp() {
       const scheduleCron = "*/5 * * * *";
       const expiresAt = Math.floor(Date.now() / 1_000) + 300;
       setTransactionProgress({ label: "Authorize KeeperHub setup", stage: "AWAITING_SIGNATURE" });
-      const signature = await walletClient.signMessage({
+      const signature = await requestKeeperHubRegistrationSignature({
+        activeOwner: true,
+        readiness: readiness.status,
+        currentVaultEvidence,
+        automation: automationHealth.state,
+      }, () => walletClient.signMessage({
         account,
         message: buildWorkflowAuthorizationMessage({
           chainId: preferredChain.id,
@@ -376,7 +431,8 @@ export function DashboardApp() {
           scheduleCron,
           expiresAt,
         }),
-      });
+      }));
+      if (!signature) return;
       setTransactionProgress(undefined);
       const response = await fetch("/api/keeperhub/workflows", {
         method: "POST",
@@ -408,7 +464,7 @@ export function DashboardApp() {
     vaultAddress={vaultAddress}
     balanceLabel={vault ? `${formatEther(vault.balanceWei)} ETH` : "—"}
     policyVersion={vault?.policyVersion.toString() ?? "—"}
-    canRegisterAutomation={automationHealth.state !== "healthy"}
+    canRegisterAutomation={canRegisterAutomation}
     walletAvailability={walletAvailability}
     readiness={readiness}
     beneficiaries={(vault?.beneficiaries ?? []).map((beneficiary) => ({ label: beneficiary.label, address: beneficiary.address, shareLabel: `${beneficiary.shareBps / 100}%`, claimed: vault?.status === "SETTLED" && beneficiary.claimableWei === 0n }))}
@@ -419,6 +475,7 @@ export function DashboardApp() {
     automation={automationHealth}
     evidenceCoverage={{ scope: executionEvidenceScope, workflows: discoveredWorkflows }}
     evidenceRefresh={evidenceRefresh}
+    currentVaultEvidence={currentVaultEvidence}
     lifecycle={lifecycle}
     transactionProgress={transactionProgress}
     onConnect={() => {
@@ -428,13 +485,14 @@ export function DashboardApp() {
     }}
     onSwitchNetwork={() => switchChain({ chainId: preferredChain.id })}
     onRefreshEvidence={() => void refreshEvidence()}
+    onRefreshReadiness={() => void refreshReadiness()}
     onAction={handleAction}
   >
     <VaultWorkspace
       account={account}
       vault={vault}
       vaultAddress={vaultAddress}
-      setVaultAddress={setVaultAddress}
+      setVaultAddress={activateVault}
       pending={pendingAction !== null}
       composer={composer}
       closeComposer={() => setComposer(null)}

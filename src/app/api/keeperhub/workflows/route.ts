@@ -4,7 +4,7 @@ import { createPublicClient, getAddress, http, verifyMessage, type Address } fro
 import { baseSepolia, sepolia } from "@/lib/chains";
 import { factoryAbi, vaultAbi } from "@/lib/contracts/abi";
 import { buildWorkflowAuthorizationMessage, validateWorkflowAuthorizationWindow, withWorkflowRegistrationLock } from "@/lib/keeperhub/authorization";
-import { selectExecutionChain } from "@/lib/keeperhub/client";
+import { selectRequestedExecutionChain } from "@/lib/keeperhub/client";
 import { keeperHubClientFromEnv } from "@/lib/keeperhub/server";
 import { buildVaultWorkflows, findObsoleteVaultWorkflows, findWorkflowByRegistrationKey, findWorkflowsByRegistrationKey, selectCanonicalWorkflow } from "@/lib/keeperhub/workflow";
 
@@ -70,12 +70,11 @@ export async function POST(request: Request) {
     }).catch(() => false);
     if (!authorized) return Response.json({ error: "Invalid workflow registration signature." }, { status: 403 });
 
-    const selected = selectExecutionChain(await client.getChains());
-    if (selected.chainId !== parsed.data.chainId) {
-      return Response.json(
-        { error: `KeeperHub selected ${selected.name}; switch the wallet to chain ${selected.chainId} before registration.` },
-        { status: 409 },
-      );
+    let selected;
+    try {
+      selected = selectRequestedExecutionChain(await client.getChains(), parsed.data.chainId);
+    } catch {
+      return Response.json({ error: "The requested wallet chain is not an enabled supported KeeperHub testnet." }, { status: 409 });
     }
 
     const definitions = buildVaultWorkflows({ ...parsed.data, vault: parsed.data.vault as Address });

@@ -86,6 +86,14 @@ export function selectExecutionChain(chains: KeeperHubChain[]): KeeperHubChain {
   return selected;
 }
 
+export function selectRequestedExecutionChain(chains: KeeperHubChain[], requestedChainId: number): KeeperHubChain {
+  const selected = chains.find(
+    (chain) => chain.chainId === requestedChainId && chain.isEnabled && chain.isTestnet && (chain.chainId === 84532 || chain.chainId === 11155111),
+  );
+  if (!selected) throw new Error("The requested chain is not an enabled supported KeeperHub testnet");
+  return selected;
+}
+
 export function buildExecutionKey(
   chainId: number,
   vault: Address,

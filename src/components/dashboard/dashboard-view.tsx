@@ -2,6 +2,7 @@ import Link from "next/link";
 
 import type { AuditTimelineItem } from "@/lib/audit/timeline";
 import type { AutomationHealth, DiscoveredWorkflowRegistration } from "@/lib/keeperhub/evidence";
+import type { CurrentVaultEvidence } from "@/lib/keeperhub/registration-gate";
 import type { KeeperHubReadiness } from "@/lib/keeperhub/readiness";
 import type { LifecycleSummary } from "@/lib/succession/status";
 import type { Address, VaultStatus } from "@/lib/succession/types";
@@ -23,6 +24,7 @@ export type DashboardViewProps = {
   walletAvailability?: "checking" | "available" | "unavailable";
   readiness?: KeeperHubReadiness;
   evidenceRefresh?: { state: "checking" | "refreshing" | "fresh" | "stale"; detail?: string };
+  currentVaultEvidence?: CurrentVaultEvidence;
   beneficiaries: Array<{ label: string; address: string; shareLabel: string; claimed: boolean }>;
   canClaim: boolean;
   auditItems: AuditTimelineItem[];
@@ -35,6 +37,7 @@ export type DashboardViewProps = {
   onConnect(): void;
   onSwitchNetwork(): void;
   onRefreshEvidence?(): void;
+  onRefreshReadiness?(): void;
   onAction(action: DashboardAction): void;
   children?: React.ReactNode;
 };
@@ -90,7 +93,7 @@ export function DashboardView(props: DashboardViewProps) {
               <div className="card-head"><span>Current state</span><span className={`status-pill status-${props.status.toLowerCase()}`}>{props.status.replace("_", " ")}</span></div>
               <strong>{props.balanceLabel}</strong><small>Vault balance · read from {props.chainName}</small>
               <div className="address-line"><code>{shorten(props.vaultAddress, 10)}</code><span>Policy v{props.policyVersion}</span></div>
-              {props.automation && <AutomationEvidence health={props.automation} readiness={props.readiness} coverage={props.evidenceCoverage} evidenceRefresh={props.evidenceRefresh} onRefreshEvidence={props.onRefreshEvidence} />}
+              {props.automation && <AutomationEvidence health={props.automation} readiness={props.readiness} coverage={props.evidenceCoverage} evidenceRefresh={props.evidenceRefresh} currentVaultEvidence={props.currentVaultEvidence} onRefreshEvidence={props.onRefreshEvidence} onRefreshReadiness={props.onRefreshReadiness} />}
             </div>
             <div className="quick-actions" aria-label="Available vault actions">
               {props.role === "owner" && props.status === "ACTIVE" && <>
@@ -139,33 +142,51 @@ function AutomationEvidence({
   readiness,
   coverage,
   evidenceRefresh,
+  currentVaultEvidence,
   onRefreshEvidence,
+  onRefreshReadiness,
 }: {
   health: AutomationHealth;
   readiness?: KeeperHubReadiness;
   coverage?: DashboardViewProps["evidenceCoverage"];
   evidenceRefresh?: DashboardViewProps["evidenceRefresh"];
+  currentVaultEvidence?: CurrentVaultEvidence;
   onRefreshEvidence?: DashboardViewProps["onRefreshEvidence"];
+  onRefreshReadiness?: DashboardViewProps["onRefreshReadiness"];
 }) {
   const runsReturned = coverage?.workflows.reduce((total, workflow) => total + workflow.coverage.runsReturned, 0) ?? 0;
   const olderRunsMayExist = coverage?.workflows.some((workflow) => workflow.coverage.olderRunsMayExist) ?? false;
-  const copy = automationCopy(health, readiness, coverage?.workflows.length ?? 0);
+  const copy = automationCopy(health, readiness, coverage?.workflows.length ?? 0, currentVaultEvidence, evidenceRefresh?.state);
   return <div className={`automation-line automation-${copy.state}`}>
     <span className="live-dot" />
     <div><strong>{copy.title}</strong><small>{copy.detail}</small>
       {coverage && <small>Recent KeeperHub window only: latest 50 non-purged runs per workflow; {runsReturned} returned.{olderRunsMayExist ? " Older runs may exist." : ""}</small>}
       {onRefreshEvidence && <button type="button" onClick={onRefreshEvidence} disabled={evidenceRefresh?.state === "refreshing"}>Refresh evidence</button>}
+      {onRefreshReadiness && <button type="button" onClick={onRefreshReadiness} disabled={readiness?.status === "checking"}>Refresh readiness</button>}
       {evidenceRefresh?.detail && <small role="status">{evidenceRefresh.detail}</small>}
     </div>
   </div>;
 }
 
-function automationCopy(health: AutomationHealth, readiness: KeeperHubReadiness | undefined, workflowCount: number) {
+function automationCopy(
+  health: AutomationHealth,
+  readiness: KeeperHubReadiness | undefined,
+  workflowCount: number,
+  currentVaultEvidence?: CurrentVaultEvidence,
+  evidenceRefresh?: NonNullable<DashboardViewProps["evidenceRefresh"]>["state"],
+) {
   if (readiness?.status === "checking") return { state: "checking", title: "Checking KeeperHub automation readiness", detail: readiness.nextStep };
   if (readiness?.status === "unconfigured") return { state: "unconfigured", title: "KeeperHub setup is not configured", detail: readiness.nextStep };
   if (readiness?.status === "chain_unsupported") return { state: "chain_unsupported", title: "KeeperHub does not support this selected chain", detail: readiness.nextStep };
   if (readiness?.status === "wallet_integration_missing") return { state: "wallet_integration_missing", title: "KeeperHub organization wallet integration is missing", detail: readiness.nextStep };
   if (readiness?.status === "preflight_unavailable") return { state: "preflight_unavailable", title: "KeeperHub readiness is unavailable", detail: readiness.nextStep };
+  if (currentVaultEvidence === "unknown") return {
+    state: "checking",
+    title: evidenceRefresh === "stale" ? "KeeperHub evidence is unavailable" : "Checking current-vault KeeperHub evidence",
+    detail: evidenceRefresh === "stale" ? "Registration remains unavailable until a successful current-vault reconciliation." : "Automation health is unknown until evidence reconciliation succeeds.",
+  };
+  if (currentVaultEvidence === "refreshing") return { state: "checking", title: "Refreshing current-vault KeeperHub evidence", detail: "Registration remains unavailable until this read-only reconciliation completes." };
+  if (currentVaultEvidence === "stale_with_success") return { state: "stale", title: "KeeperHub evidence is stale", detail: "The prior reconciliation is retained, but registration remains unavailable until evidence is fresh." };
   if (readiness?.status === "ready" && health.state !== "healthy" && workflowCount === 0) return { state: "ready_to_register", title: "Ready to register KeeperHub automation", detail: readiness.nextStep };
   if (health.state === "healthy") return { state: "healthy", title: "KeeperHub automation is healthy", detail: health.detail };
   if (!readiness && workflowCount === 0) return { state: "not_registered", title: "KeeperHub automation is not registered", detail: health.detail };

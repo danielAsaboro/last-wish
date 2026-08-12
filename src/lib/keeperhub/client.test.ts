@@ -6,6 +6,7 @@ import {
   classifyWorkflowEvidence,
   parseEnabledChains,
   selectExecutionChain,
+  selectRequestedExecutionChain,
   verifyKeeperHubWriteLog,
 } from "./client";
 
@@ -31,6 +32,15 @@ describe("KeeperHub chain selection", () => {
         ]),
       ),
     ).toThrow("No supported KeeperHub testnet is enabled");
+  });
+
+  it("selects the exact requested enabled supported testnet without priority fallback", () => {
+    const chains = parseEnabledChains([
+      { chainId: 84532, name: "Base Sepolia", isEnabled: true, isTestnet: true },
+      { chainId: 11155111, name: "Sepolia", isEnabled: true, isTestnet: true },
+    ]);
+    expect(selectRequestedExecutionChain(chains, 11155111)).toMatchObject({ chainId: 11155111, name: "Sepolia" });
+    expect(() => selectRequestedExecutionChain(chains, 1)).toThrow(/supported KeeperHub testnet/i);
   });
 });
 

@@ -79,13 +79,17 @@ describe("DashboardView", () => {
 
   it("keeps previously reconciled evidence visible and labels a failed refresh as stale", () => {
     const onRefreshEvidence = vi.fn();
+    const onRefreshReadiness = vi.fn();
     render(<DashboardView {...baseProps}
       automation={{ state: "healthy", detail: "Enabled current open and finalize workflows are registered." }}
       evidenceRefresh={{ state: "stale", detail: "Evidence refresh failed. Showing the last reconciled evidence; retrying would not rebroadcast a transaction." }}
       onRefreshEvidence={onRefreshEvidence}
+      onRefreshReadiness={onRefreshReadiness}
     />);
     fireEvent.click(screen.getByRole("button", { name: /refresh evidence/i }));
     expect(onRefreshEvidence).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole("button", { name: /refresh readiness/i }));
+    expect(onRefreshReadiness).toHaveBeenCalledOnce();
     expect(screen.getByText(/showing the last reconciled evidence/i)).toBeInTheDocument();
   });
 
