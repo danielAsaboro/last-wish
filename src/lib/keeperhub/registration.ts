@@ -85,6 +85,8 @@ export async function registerVaultWorkflowPair(
         : undefined;
     });
     if (healthy.every((candidate): candidate is NonNullable<typeof candidate> => candidate !== undefined)) {
+      rows = await client.listWorkflows();
+      assertConfirmedPair(rows, healthy);
       const enabledObsolete = findObsoleteVaultWorkflows(
         rows,
         input.chainId,

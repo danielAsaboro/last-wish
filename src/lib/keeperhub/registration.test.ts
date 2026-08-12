@@ -177,6 +177,33 @@ describe("idempotent KeeperHub workflow-pair registration", () => {
     expect(client.simulateWorkflow).not.toHaveBeenCalled();
   });
 
+  it("reconfirms an apparently healthy pair and retires a concurrently exposed prior-policy workflow", async () => {
+    const oldDefinition = buildVaultWorkflows({ chainId: 84532, vault, scheduleCron: "*/5 * * * *", policyVersion: 2n })[0];
+    let current = [row("wf_open", definitions[0], true), row("wf_finalize", definitions[1], true)];
+    let listed = 0;
+    const client = {
+      listWorkflows: vi.fn(async () => {
+        listed += 1;
+        if (listed === 2) current.push(row("wf_old_concurrent", oldDefinition, true));
+        return structuredClone(current);
+      }),
+      createWorkflow: vi.fn(),
+      updateWorkflow: vi.fn(async (id: string, patch: Record<string, unknown>) => {
+        current = current.map((workflow) => workflow.id === id ? { ...workflow, ...structuredClone(patch) } as typeof workflow : workflow);
+        return {};
+      }),
+      simulateWorkflow: vi.fn(),
+    };
+
+    const result = await registerVaultWorkflowPair(client, { chainId: 84532, vault, definitions, readPolicyGuard: async () => false });
+
+    expect(result.retiredWorkflowIds).toEqual(["wf_old_concurrent"]);
+    expect(client.listWorkflows).toHaveBeenCalledTimes(3);
+    expect(client.updateWorkflow).toHaveBeenCalledWith("wf_old_concurrent", { enabled: false });
+    expect(client.createWorkflow).not.toHaveBeenCalled();
+    expect(client.simulateWorkflow).not.toHaveBeenCalled();
+  });
+
   it("keeps an exact enabled pair untouched while retiring an enabled prior-policy schedule", async () => {
     const old = row("wf_old", buildVaultWorkflows({ chainId: 84532, vault, scheduleCron: "*/5 * * * *", policyVersion: 2n })[0], true);
     let current = [row("wf_open", definitions[0], true), row("wf_finalize", definitions[1], true), old];
