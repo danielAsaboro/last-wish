@@ -224,6 +224,54 @@ describe("DashboardView", () => {
     expect(screen.getAllByText(/UTC/i)).toHaveLength(2);
   });
 
+  it("reveals full KeeperHub identifiers in an accessible evidence inspector", () => {
+    render(<DashboardView {...baseProps} auditItems={[{
+      id: "keeperhub-exec-1",
+      source: "keeperhub",
+      title: "KeeperHub execution verified",
+      detail: "Receipt and state agree.",
+      tone: "success",
+      workflowId: "wf_full_identifier_123456789",
+      executionId: "exec_full_identifier_987654321",
+      receiptStatus: "success",
+      observedVaultStatus: "PENDING",
+    }]} />);
+
+    const inspector = screen.getByText(/inspect keeperhub evidence/i).closest("details");
+    expect(inspector).not.toHaveAttribute("open");
+    fireEvent.click(screen.getByText(/inspect keeperhub evidence/i));
+    expect(inspector).toHaveAttribute("open");
+    expect(screen.getByText("wf_full_identifier_123456789")).toBeInTheDocument();
+    expect(screen.getByText("exec_full_identifier_987654321")).toBeInTheDocument();
+    expect(screen.getByText(/receipt status/i)).toBeInTheDocument();
+  });
+
+  it("keeps the KeeperHub inspector and unavailable reconciliation fields off chain-only evidence", () => {
+    render(<DashboardView {...baseProps} auditItems={[
+      {
+        id: "chain-heartbeat-1",
+        source: "chain",
+        title: "Heartbeat recorded",
+        detail: "Confirmed by the vault contract.",
+        tone: "success",
+      },
+      {
+        id: "keeperhub-exec-2",
+        source: "keeperhub",
+        title: "KeeperHub execution in progress",
+        detail: "Execution status: running.",
+        tone: "warning",
+        workflowId: "wf_minimal",
+      },
+    ]} />);
+
+    expect(screen.getAllByText(/inspect keeperhub evidence/i)).toHaveLength(1);
+    fireEvent.click(screen.getByText(/inspect keeperhub evidence/i));
+    expect(screen.queryByText(/receipt status/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/observed vault status/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^outcome$/i)).not.toBeInTheDocument();
+  });
+
   it("distinguishes wallet approval from onchain confirmation", () => {
     const { rerender } = render(<DashboardView {...baseProps} pendingAction="heartbeat" transactionProgress={{ label: "Record heartbeat", stage: "AWAITING_SIGNATURE" }} />);
     expect(screen.getByRole("status")).toHaveTextContent(/confirm record heartbeat in your wallet/i);

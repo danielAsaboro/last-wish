@@ -25,7 +25,14 @@ describe("buildAuditTimeline", () => {
       ],
     });
     expect(timeline.map((item) => item.source)).toEqual(["keeperhub", "chain", "chain"]);
-    expect(timeline[0]).toMatchObject({ title: "KeeperHub execution verified", tone: "success", blockNumber: 99n, gasUsed: 70_000n });
+    expect(timeline[0]).toMatchObject({
+      title: "KeeperHub execution verified",
+      tone: "success",
+      blockNumber: 99n,
+      gasUsed: 70_000n,
+      receiptStatus: "success",
+      observedVaultStatus: "PENDING",
+    });
   });
 
   it("shows human-readable value and actor provenance for chain events", () => {

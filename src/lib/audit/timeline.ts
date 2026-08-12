@@ -1,6 +1,6 @@
 import { formatEther } from "viem";
 
-import type { Address, KeeperHubEvidence } from "@/lib/succession/types";
+import type { Address, KeeperHubEvidence, VaultStatus } from "@/lib/succession/types";
 
 export type ChainAuditEvent = {
   id: string;
@@ -26,6 +26,9 @@ export type AuditTimelineItem = {
   action?: string;
   blockNumber?: bigint;
   gasUsed?: bigint;
+  receiptStatus?: string;
+  observedVaultStatus?: VaultStatus;
+  outcome?: "TRANSACTION" | "NO_WRITE";
 };
 
 const chainTitles: Record<ChainAuditEvent["type"], string> = {
@@ -65,6 +68,9 @@ export function buildAuditTimeline(input: {
         workflowId: evidence.workflowId,
         executionId: evidence.executionId,
         timestamp: evidence.timestamp,
+        receiptStatus: evidence.receiptStatus,
+        observedVaultStatus: evidence.observedVaultStatus,
+        outcome: evidence.outcome,
       };
     }
     if (evidence.status === "unknown" || evidence.observedVaultStatus === "RECOVERY_REQUIRED") {
@@ -81,6 +87,9 @@ export function buildAuditTimeline(input: {
         timestamp: evidence.timestamp,
         blockNumber: evidence.blockNumber,
         gasUsed: evidence.gasUsed,
+        receiptStatus: evidence.receiptStatus,
+        observedVaultStatus: evidence.observedVaultStatus,
+        outcome: evidence.outcome,
       };
     }
     if (evidence.verified) {
@@ -96,6 +105,9 @@ export function buildAuditTimeline(input: {
         timestamp: evidence.timestamp,
         blockNumber: evidence.blockNumber,
         gasUsed: evidence.gasUsed,
+        receiptStatus: evidence.receiptStatus,
+        observedVaultStatus: evidence.observedVaultStatus,
+        outcome: evidence.outcome,
       };
     }
     return {
@@ -112,6 +124,9 @@ export function buildAuditTimeline(input: {
       timestamp: evidence.timestamp,
       blockNumber: evidence.blockNumber,
       gasUsed: evidence.gasUsed,
+      receiptStatus: evidence.receiptStatus,
+      observedVaultStatus: evidence.observedVaultStatus,
+      outcome: evidence.outcome,
     };
   });
 

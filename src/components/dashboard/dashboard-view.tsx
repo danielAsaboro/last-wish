@@ -146,13 +146,42 @@ export function DashboardView(props: DashboardViewProps) {
             <article className="panel audit-panel">
               <div className="panel-heading"><div><p className="eyebrow">Evidence, not activity</p><h2>Audit trail</h2></div><span>{props.auditItems.length}</span></div>
               {props.auditItems.length === 0 ? <div className="empty-state"><span>◎</span><p>No indexed events yet. Confirmed contract events and KeeperHub receipts will appear here.</p></div> :
-                <ol className="audit-list">{props.auditItems.map((item) => <li key={item.id} className={`tone-${item.tone}`}><span /><div><strong>{item.title}</strong><p>{item.detail}</p>{item.action && <p className="audit-action">{item.action}</p>}<div className="audit-meta"><small>{item.source}</small>{item.timestamp !== undefined && <time dateTime={new Date(Number(item.timestamp) * 1000).toISOString()}>{formatTimestamp(item.timestamp)}</time>}{item.blockNumber !== undefined && <span>Block {item.blockNumber.toString()}</span>}{item.gasUsed !== undefined && <span>{item.gasUsed.toLocaleString("en-US")} gas</span>}{item.workflowId && <code>{shortenIdentifier(item.workflowId)}</code>}{item.executionId && <code>{shortenIdentifier(item.executionId)}</code>}</div>{item.transactionHash && <a href={`${explorerBase(props.chainName)}/tx/${item.transactionHash}`} target="_blank" rel="noreferrer">View transaction ↗</a>}</div></li>)}</ol>}
+                <ol className="audit-list">{props.auditItems.map((item) => <AuditTimelineRow key={item.id} item={item} chainName={props.chainName} />)}</ol>}
             </article>
           </section>
         </>
       ) : <section className="empty-vault"><p className="eyebrow">No vault loaded</p><h2>Create a policy or load an existing vault.</h2><p>Every value shown after loading comes from the connected chain.</p></section>}
     </DashboardFrame>
   );
+}
+
+function AuditTimelineRow({ item, chainName }: { item: AuditTimelineItem; chainName: string }) {
+  const hasKeeperHubIdentity = item.source === "keeperhub" && (item.workflowId || item.executionId);
+
+  return <li className={`tone-${item.tone}`}><span /><div>
+    <strong>{item.title}</strong>
+    <p>{item.detail}</p>
+    {item.action && <p className="audit-action">{item.action}</p>}
+    <div className="audit-meta">
+      <small>{item.source}</small>
+      {item.timestamp !== undefined && <time dateTime={new Date(Number(item.timestamp) * 1000).toISOString()}>{formatTimestamp(item.timestamp)}</time>}
+      {item.blockNumber !== undefined && <span>Block {item.blockNumber.toString()}</span>}
+      {item.gasUsed !== undefined && <span>{item.gasUsed.toLocaleString("en-US")} gas</span>}
+      {item.workflowId && <code>{shortenIdentifier(item.workflowId)}</code>}
+      {item.executionId && <code>{shortenIdentifier(item.executionId)}</code>}
+    </div>
+    {hasKeeperHubIdentity && <details className="evidence-inspector">
+      <summary>Inspect KeeperHub evidence</summary>
+      <dl className="evidence-inspector-ledger">
+        {item.workflowId && <div><dt>Workflow ID</dt><dd><code>{item.workflowId}</code></dd></div>}
+        {item.executionId && <div><dt>Execution ID</dt><dd><code>{item.executionId}</code></dd></div>}
+        {item.receiptStatus && <div><dt>Receipt status</dt><dd>{item.receiptStatus}</dd></div>}
+        {item.observedVaultStatus && <div><dt>Observed vault status</dt><dd>{item.observedVaultStatus}</dd></div>}
+        {item.outcome && <div><dt>Outcome</dt><dd>{item.outcome}</dd></div>}
+      </dl>
+    </details>}
+    {item.transactionHash && <a href={`${explorerBase(chainName)}/tx/${item.transactionHash}`} target="_blank" rel="noreferrer">View transaction ↗</a>}
+  </div></li>;
 }
 
 function AutomationEvidence({
