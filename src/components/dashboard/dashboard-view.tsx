@@ -2,6 +2,7 @@ import Link from "next/link";
 
 import type { AuditTimelineItem } from "@/lib/audit/timeline";
 import type { AutomationHealth, DiscoveredWorkflowRegistration } from "@/lib/keeperhub/evidence";
+import type { KeeperHubReadiness } from "@/lib/keeperhub/readiness";
 import type { LifecycleSummary } from "@/lib/succession/status";
 import type { Address, VaultStatus } from "@/lib/succession/types";
 
@@ -19,6 +20,9 @@ export type DashboardViewProps = {
   balanceLabel: string;
   policyVersion: string;
   canRegisterAutomation: boolean;
+  walletAvailability?: "checking" | "available" | "unavailable";
+  readiness?: KeeperHubReadiness;
+  evidenceRefresh?: { state: "checking" | "refreshing" | "fresh" | "stale"; detail?: string };
   beneficiaries: Array<{ label: string; address: string; shareLabel: string; claimed: boolean }>;
   canClaim: boolean;
   auditItems: AuditTimelineItem[];
@@ -30,6 +34,7 @@ export type DashboardViewProps = {
   transactionProgress?: WalletTransactionProgress;
   onConnect(): void;
   onSwitchNetwork(): void;
+  onRefreshEvidence?(): void;
   onAction(action: DashboardAction): void;
   children?: React.ReactNode;
 };
@@ -42,7 +47,12 @@ export function DashboardView(props: DashboardViewProps) {
           <p className="eyebrow">Start with proof of control</p>
           <h1>Your wallet is your account.</h1>
           <p>Connect an injected EVM wallet to create a vault or inspect one you already know. LastWish does not use passwords or hold keys.</p>
-          <button className="button" onClick={props.onConnect}>Connect wallet</button>
+          {props.message && <div className={`notice ${props.message.tone}`} role="status">{props.message.text}</div>}
+          {props.walletAvailability === "unavailable" ? <>
+            <button className="button" disabled>Connect wallet</button>
+            <p>No compatible injected EVM wallet was detected. Install one, then refresh this page.</p>
+            <a href="https://metamask.io/download/" target="_blank" rel="noreferrer">Install an EVM wallet ↗</a>
+          </> : <button className="button" onClick={props.onConnect}>Connect wallet</button>}
           <ul className="trust-list"><li>No seed phrase requested</li><li>No transaction until you review it</li><li>Base Sepolia testnet</li></ul>
         </section>
       </DashboardFrame>
@@ -80,7 +90,7 @@ export function DashboardView(props: DashboardViewProps) {
               <div className="card-head"><span>Current state</span><span className={`status-pill status-${props.status.toLowerCase()}`}>{props.status.replace("_", " ")}</span></div>
               <strong>{props.balanceLabel}</strong><small>Vault balance · read from {props.chainName}</small>
               <div className="address-line"><code>{shorten(props.vaultAddress, 10)}</code><span>Policy v{props.policyVersion}</span></div>
-              {props.automation && <AutomationEvidence health={props.automation} coverage={props.evidenceCoverage} />}
+              {props.automation && <AutomationEvidence health={props.automation} readiness={props.readiness} coverage={props.evidenceCoverage} evidenceRefresh={props.evidenceRefresh} onRefreshEvidence={props.onRefreshEvidence} />}
             </div>
             <div className="quick-actions" aria-label="Available vault actions">
               {props.role === "owner" && props.status === "ACTIVE" && <>
@@ -94,7 +104,7 @@ export function DashboardView(props: DashboardViewProps) {
               {props.status === "READY" && <p className="completed-action">KeeperHub can finalize now · owner may still reactivate</p>}
               {props.role === "beneficiary" && props.status === "SETTLED" && props.canClaim && <ActionButton action="claim" label="Claim allocation" {...props} />}
               {props.role === "beneficiary" && props.status === "SETTLED" && !props.canClaim && <p className="completed-action">Allocation already claimed ✓</p>}
-              {props.role === "owner" && props.status !== "SETTLED" && props.canRegisterAutomation && <ActionButton action="register" label="Register KeeperHub" {...props} />}
+              {props.role === "owner" && props.status !== "SETTLED" && props.canRegisterAutomation && props.readiness?.status === "ready" && <ActionButton action="register" label="Register KeeperHub" {...props} />}
             </div>
           </section>
 
@@ -126,19 +136,40 @@ export function DashboardView(props: DashboardViewProps) {
 
 function AutomationEvidence({
   health,
+  readiness,
   coverage,
+  evidenceRefresh,
+  onRefreshEvidence,
 }: {
   health: AutomationHealth;
+  readiness?: KeeperHubReadiness;
   coverage?: DashboardViewProps["evidenceCoverage"];
+  evidenceRefresh?: DashboardViewProps["evidenceRefresh"];
+  onRefreshEvidence?: DashboardViewProps["onRefreshEvidence"];
 }) {
   const runsReturned = coverage?.workflows.reduce((total, workflow) => total + workflow.coverage.runsReturned, 0) ?? 0;
   const olderRunsMayExist = coverage?.workflows.some((workflow) => workflow.coverage.olderRunsMayExist) ?? false;
-  return <div className={`automation-line automation-${health.state}`}>
+  const copy = automationCopy(health, readiness, coverage?.workflows.length ?? 0);
+  return <div className={`automation-line automation-${copy.state}`}>
     <span className="live-dot" />
-    <div><strong>{health.state === "healthy" ? "KeeperHub automation is ready" : "KeeperHub automation needs repair"}</strong><small>{health.detail}</small>
+    <div><strong>{copy.title}</strong><small>{copy.detail}</small>
       {coverage && <small>Recent KeeperHub window only: latest 50 non-purged runs per workflow; {runsReturned} returned.{olderRunsMayExist ? " Older runs may exist." : ""}</small>}
+      {onRefreshEvidence && <button type="button" onClick={onRefreshEvidence} disabled={evidenceRefresh?.state === "refreshing"}>Refresh evidence</button>}
+      {evidenceRefresh?.detail && <small role="status">{evidenceRefresh.detail}</small>}
     </div>
   </div>;
+}
+
+function automationCopy(health: AutomationHealth, readiness: KeeperHubReadiness | undefined, workflowCount: number) {
+  if (readiness?.status === "checking") return { state: "checking", title: "Checking KeeperHub automation readiness", detail: readiness.nextStep };
+  if (readiness?.status === "unconfigured") return { state: "unconfigured", title: "KeeperHub setup is not configured", detail: readiness.nextStep };
+  if (readiness?.status === "chain_unsupported") return { state: "chain_unsupported", title: "KeeperHub does not support this selected chain", detail: readiness.nextStep };
+  if (readiness?.status === "wallet_integration_missing") return { state: "wallet_integration_missing", title: "KeeperHub organization wallet integration is missing", detail: readiness.nextStep };
+  if (readiness?.status === "preflight_unavailable") return { state: "preflight_unavailable", title: "KeeperHub readiness is unavailable", detail: readiness.nextStep };
+  if (readiness?.status === "ready" && health.state !== "healthy" && workflowCount === 0) return { state: "ready_to_register", title: "Ready to register KeeperHub automation", detail: readiness.nextStep };
+  if (health.state === "healthy") return { state: "healthy", title: "KeeperHub automation is healthy", detail: health.detail };
+  if (!readiness && workflowCount === 0) return { state: "not_registered", title: "KeeperHub automation is not registered", detail: health.detail };
+  return { state: "recovery_required", title: readiness ? "KeeperHub automation requires recovery" : "KeeperHub automation is not registered", detail: health.detail };
 }
 
 function LifecycleCard({ lifecycle }: { lifecycle: LifecycleSummary }) {

@@ -19,6 +19,7 @@ export type ContractCallRequest = {
 };
 
 export type KeeperHubWorkflowSummary = { id: string; name: string; description?: string; createdAt?: string; enabled?: boolean };
+export type KeeperHubIntegrationSummary = { id: string; name: string; type: string; address: string | null; isManaged?: boolean };
 
 export class KeeperHubClient {
   private readonly apiKey: string;
@@ -54,6 +55,19 @@ export class KeeperHubClient {
       const { id, name, description, createdAt, enabled } = item as Record<string, unknown>;
       return typeof id === "string" && typeof name === "string"
         ? [{ id, name, ...(typeof description === "string" ? { description } : {}), ...(typeof createdAt === "string" ? { createdAt } : {}), ...(typeof enabled === "boolean" ? { enabled } : {}) }]
+        : [];
+    });
+  }
+
+  async listIntegrations(): Promise<KeeperHubIntegrationSummary[]> {
+    const { body } = await this.request("/api/integrations");
+    const candidate = unwrapData(body);
+    if (!Array.isArray(candidate)) throw new Error("KeeperHub returned an invalid integration list.");
+    return candidate.flatMap((item) => {
+      if (typeof item !== "object" || item === null) return [];
+      const { id, name, type, address, isManaged } = item as Record<string, unknown>;
+      return typeof id === "string" && typeof name === "string" && typeof type === "string" && (typeof address === "string" || address === null || address === undefined)
+        ? [{ id, name, type, address: typeof address === "string" ? address : null, ...(typeof isManaged === "boolean" ? { isManaged } : {}) }]
         : [];
     });
   }

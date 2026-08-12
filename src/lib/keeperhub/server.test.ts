@@ -20,6 +20,33 @@ describe("KeeperHubClient", () => {
     expect(fetcher).toHaveBeenCalledWith("https://app.keeperhub.com/api/workflows", expect.any(Object));
   });
 
+  it("lists the safe organization integration summary needed for a wallet readiness preflight", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json([
+      {
+        id: "integration_web3",
+        name: "Organization wallet",
+        type: "web3",
+        address: "0x1111111111111111111111111111111111111111",
+        isManaged: true,
+        createdAt: "2026-08-12T12:00:00Z",
+        updatedAt: "2026-08-12T12:00:00Z",
+        config: { privateKey: "must-not-be-returned" },
+      },
+    ]));
+    const client = new KeeperHubClient({ apiKey: "kh_secret", fetcher });
+
+    await expect(client.listIntegrations()).resolves.toEqual([
+      {
+        id: "integration_web3",
+        name: "Organization wallet",
+        type: "web3",
+        address: "0x1111111111111111111111111111111111111111",
+        isManaged: true,
+      },
+    ]);
+    expect(fetcher).toHaveBeenCalledWith("https://app.keeperhub.com/api/integrations", expect.any(Object));
+  });
+
   it("requires KeeperHub's explicit workflow simulation success envelope", async () => {
     const fetcher = vi.fn<typeof fetch>()
       .mockResolvedValueOnce(Response.json({ ok: true, result: { simulatedNodeCount: 4, skippedNodeCount: 1 } }))

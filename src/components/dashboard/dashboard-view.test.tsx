@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { DashboardView, type DashboardViewProps } from "./dashboard-view";
@@ -13,6 +13,7 @@ const baseProps: DashboardViewProps = {
   balanceLabel: "0.24 ETH",
   policyVersion: "3",
   canRegisterAutomation: true,
+  readiness: { status: "ready", nextStep: "The selected network and organization wallet are available. Review and sign registration when you are ready." },
   beneficiaries: [
     { label: "Ada", address: "0x3333333333333333333333333333333333333333", shareLabel: "60%", claimed: false },
     { label: "Lin", address: "0x4444444444444444444444444444444444444444", shareLabel: "40%", claimed: false },
@@ -39,6 +40,53 @@ describe("DashboardView", () => {
     render(<DashboardView {...baseProps} connection="disconnected" account={undefined} role="observer" vaultAddress={undefined} />);
     expect(screen.getByRole("button", { name: /connect wallet/i })).toBeInTheDocument();
     expect(screen.getByText(/your wallet is your account/i)).toBeInTheDocument();
+  });
+
+  it("explains how to install a compatible EVM wallet when no injected provider exists", () => {
+    render(<DashboardView {...baseProps} connection="disconnected" account={undefined} role="observer" vaultAddress={undefined} walletAvailability="unavailable" />);
+    expect(screen.getByRole("button", { name: /connect wallet/i })).toBeDisabled();
+    expect(screen.getByText(/no compatible injected evm wallet was detected/i)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /install an evm wallet/i })).toHaveAttribute("href", "https://metamask.io/download/");
+  });
+
+  it("shows the factual readiness state and only exposes registration when readiness is ready", () => {
+    const { rerender } = render(<DashboardView {...baseProps}
+      readiness={{ status: "unconfigured", nextStep: "Configure the server-side KeeperHub API key and trusted LastWish factory address, then refresh readiness." }}
+      automation={{ state: "recovery_required", detail: "The current open workflow is missing." }}
+    />);
+    expect(screen.getByText(/keeperhub setup is not configured/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /register keeperhub/i })).not.toBeInTheDocument();
+
+    rerender(<DashboardView {...baseProps}
+      readiness={{ status: "ready", nextStep: "The selected network and organization wallet are available. Review and sign registration when you are ready." }}
+      automation={{ state: "recovery_required", detail: "The current open workflow is missing." }}
+    />);
+    expect(screen.getByText(/ready to register keeperhub automation/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /register keeperhub/i })).toBeInTheDocument();
+  });
+
+  it("labels checking, unavailable, and unregistered automation without inventing readiness", () => {
+    const automation = { state: "recovery_required" as const, detail: "The current open workflow is missing." };
+    const { rerender } = render(<DashboardView {...baseProps} readiness={{ status: "checking", nextStep: "Checking the selected network and organization wallet before any registration signature." }} automation={automation} />);
+    expect(screen.getByText(/checking keeperhub automation readiness/i)).toBeInTheDocument();
+
+    rerender(<DashboardView {...baseProps} readiness={{ status: "preflight_unavailable", nextStep: "KeeperHub readiness could not be checked. Inspect KeeperHub availability and refresh; do not sign until it is ready." }} automation={automation} />);
+    expect(screen.getByText(/keeperhub readiness is unavailable/i)).toBeInTheDocument();
+
+    rerender(<DashboardView {...baseProps} readiness={undefined} automation={automation} />);
+    expect(screen.getByText(/automation is not registered/i)).toBeInTheDocument();
+  });
+
+  it("keeps previously reconciled evidence visible and labels a failed refresh as stale", () => {
+    const onRefreshEvidence = vi.fn();
+    render(<DashboardView {...baseProps}
+      automation={{ state: "healthy", detail: "Enabled current open and finalize workflows are registered." }}
+      evidenceRefresh={{ state: "stale", detail: "Evidence refresh failed. Showing the last reconciled evidence; retrying would not rebroadcast a transaction." }}
+      onRefreshEvidence={onRefreshEvidence}
+    />);
+    fireEvent.click(screen.getByRole("button", { name: /refresh evidence/i }));
+    expect(onRefreshEvidence).toHaveBeenCalledOnce();
+    expect(screen.getByText(/showing the last reconciled evidence/i)).toBeInTheDocument();
   });
 
   it("blocks writes on the wrong network", () => {
@@ -91,7 +139,7 @@ describe("DashboardView", () => {
         workflows: [{ workflowId: "wf_open", name: "Open", policyVersion: "3", action: "open", enabled: false, registrationState: "current", coverage: { runsReturned: 50, providerWindow: "latest_50_non_purged", olderRunsMayExist: true, providerPagination: "unavailable" } }],
       }} />);
     expect(screen.getByRole("button", { name: /register keeperhub/i })).toBeInTheDocument();
-    expect(screen.getByText(/automation needs repair/i)).toBeInTheDocument();
+    expect(screen.getByText(/automation requires recovery/i)).toBeInTheDocument();
     expect(screen.getByText(/latest 50 non-purged runs/i)).toBeInTheDocument();
     expect(screen.getByText(/older runs may exist/i)).toBeInTheDocument();
   });
