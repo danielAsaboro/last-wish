@@ -21,15 +21,7 @@ contract LastWishVaultFactory {
     ) external returns (address vault) {
         if (vaultOf[msg.sender] != address(0)) revert VaultAlreadyExists();
         vault = address(
-            new LastWishVault(
-                msg.sender,
-                guardian,
-                beneficiaries,
-                shares,
-                heartbeatInterval,
-                gracePeriod,
-                testnetDemo
-            )
+            new LastWishVault(msg.sender, guardian, beneficiaries, shares, heartbeatInterval, gracePeriod, testnetDemo)
         );
         vaultOf[msg.sender] = vault;
         _vaults[msg.sender].push(vault);

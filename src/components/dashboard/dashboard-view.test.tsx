@@ -12,6 +12,7 @@ const baseProps: DashboardViewProps = {
   vaultAddress: "0x2222222222222222222222222222222222222222",
   balanceLabel: "0.24 ETH",
   policyVersion: "3",
+  canRegisterAutomation: true,
   beneficiaries: [
     { label: "Ada", address: "0x3333333333333333333333333333333333333333", shareLabel: "60%", claimed: false },
     { label: "Lin", address: "0x4444444444444444444444444444444444444444", shareLabel: "40%", claimed: false },
@@ -60,6 +61,10 @@ describe("DashboardView", () => {
     const { rerender } = render(<DashboardView {...baseProps} role="guardian" status="PENDING" />);
     expect(screen.getByRole("button", { name: /veto settlement/i })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /record heartbeat/i })).not.toBeInTheDocument();
+
+    rerender(<DashboardView {...baseProps} role="guardian" status="READY" />);
+    expect(screen.queryByRole("button", { name: /veto settlement/i })).not.toBeInTheDocument();
+
     rerender(<DashboardView {...baseProps} role="beneficiary" status="SETTLED" />);
     expect(screen.getByRole("button", { name: /claim allocation/i })).toBeInTheDocument();
   });
@@ -68,6 +73,9 @@ describe("DashboardView", () => {
     const { rerender } = render(<DashboardView {...baseProps} role="observer" />);
     expect(screen.queryByRole("button", { name: /register keeperhub/i })).not.toBeInTheDocument();
     rerender(<DashboardView {...baseProps} role="owner" status="SETTLED" />);
+    expect(screen.queryByRole("button", { name: /register keeperhub/i })).not.toBeInTheDocument();
+
+    rerender(<DashboardView {...baseProps} role="owner" canRegisterAutomation={false} />);
     expect(screen.queryByRole("button", { name: /register keeperhub/i })).not.toBeInTheDocument();
   });
 
@@ -80,6 +88,15 @@ describe("DashboardView", () => {
     rerender(<DashboardView {...baseProps} role="beneficiary" status="SETTLED" canClaim={false} />);
     expect(screen.queryByRole("button", { name: /claim allocation/i })).not.toBeInTheDocument();
     expect(screen.getByText(/allocation already claimed/i)).toBeInTheDocument();
+  });
+
+  it("lets the owner reactivate any unfinalized settlement, including after grace", () => {
+    const { rerender } = render(<DashboardView {...baseProps} status="PENDING" />);
+    expect(screen.getByRole("button", { name: /reactivate vault/i })).toBeInTheDocument();
+    rerender(<DashboardView {...baseProps} status="READY" />);
+    expect(screen.getByRole("button", { name: /reactivate vault/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /finalize through wallet/i })).not.toBeInTheDocument();
+    expect(screen.getByText(/keeperhub can finalize/i)).toBeInTheDocument();
   });
 
   it("links transaction-backed evidence to the active testnet explorer", () => {

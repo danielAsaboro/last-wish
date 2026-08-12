@@ -150,12 +150,19 @@ export function parseWorkflowExecutions(input: unknown): KeeperHubWorkflowExecut
   return z.array(workflowExecutionSchema).parse(candidate);
 }
 
-export function verifyKeeperHubWriteLog(input: unknown, transactionHash: Address): boolean {
+export function verifyKeeperHubWriteLog(
+  input: unknown,
+  transactionHash: Address,
+  expectedExecutionId: string,
+  expectedWorkflowId: string,
+): boolean {
   const parsed = workflowLogResponseSchema.safeParse(input);
   if (!parsed.success) return false;
+  if (parsed.data.execution.id !== expectedExecutionId || parsed.data.execution.workflowId !== expectedWorkflowId) return false;
   return parsed.data.logs.some((log) => {
     const hash = log.output?.transactionHash;
-    return log.nodeType === "web3/write-contract" &&
+    return log.executionId === expectedExecutionId &&
+      log.nodeType === "web3/write-contract" &&
       log.status === "success" &&
       log.output?.success === true &&
       typeof hash === "string" &&

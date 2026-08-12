@@ -21,7 +21,16 @@ const eventTypes: Record<string, ChainAuditEvent["type"]> = {
   Claimed: "Claimed",
 };
 
-const actorKeys = ["sender", "owner", "caller", "guardian", "recipient", "beneficiary"] as const;
+const actorKeyByEvent: Record<string, string> = {
+  Deposit: "sender",
+  Heartbeat: "owner",
+  PolicyUpdated: "actor",
+  SettlementOpened: "caller",
+  SettlementVetoedByGuardian: "guardian",
+  SettlementFinalized: "caller",
+  Withdrawal: "actor",
+  Claimed: "beneficiary",
+};
 
 export function buildChainAuditEvents(logs: RawVaultLog[], blockTimestamps: Map<bigint, bigint>): ChainAuditEvent[] {
   return logs.flatMap((log, index) => {
@@ -30,7 +39,8 @@ export function buildChainAuditEvents(logs: RawVaultLog[], blockTimestamps: Map<
     const timestamp = blockTimestamps.get(log.blockNumber);
     if (timestamp === undefined) return [];
     const args = log.args ?? {};
-    const actor = actorKeys.map((key) => args[key]).find(isAddressValue);
+    const actorValue = log.eventName ? args[actorKeyByEvent[log.eventName]] : undefined;
+    const actor = isAddressValue(actorValue) ? actorValue : undefined;
     return [{
       id: `${log.transactionHash}-${log.logIndex ?? index}`,
       type,

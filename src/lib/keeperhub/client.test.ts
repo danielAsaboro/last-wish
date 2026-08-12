@@ -106,7 +106,7 @@ describe("KeeperHub execution evidence", () => {
         input: {}, output: { success: true, transactionHash: hash, gasUsedUnits: "70000" }, error: null,
         duration: "1000", startedAt: "2026-08-12T12:00:00Z", completedAt: "2026-08-12T12:00:01Z",
       }],
-    }, hash)).toBe(true);
+    }, hash, "exec_1", "wf_1")).toBe(true);
 
     expect(verifyKeeperHubWriteLog({
       execution: { id: "exec_1", workflowId: "wf_1", status: "success" },
@@ -115,7 +115,25 @@ describe("KeeperHub execution evidence", () => {
         input: {}, output: { success: true, transactionHash: `0x${"b".repeat(64)}` }, error: null,
         duration: "1000", startedAt: "2026-08-12T12:00:00Z", completedAt: "2026-08-12T12:00:01Z",
       }],
-    }, hash)).toBe(false);
+    }, hash, "exec_1", "wf_1")).toBe(false);
+
+    expect(verifyKeeperHubWriteLog({
+      execution: { id: "exec_other", workflowId: "wf_1", status: "success" },
+      logs: [{
+        id: "log_1", executionId: "exec_1", nodeId: "execute", nodeName: "Open grace", nodeType: "web3/write-contract", status: "success",
+        input: {}, output: { success: true, transactionHash: hash }, error: null,
+        duration: "1000", startedAt: "2026-08-12T12:00:00Z", completedAt: "2026-08-12T12:00:01Z",
+      }],
+    }, hash, "exec_1", "wf_1")).toBe(false);
+
+    expect(verifyKeeperHubWriteLog({
+      execution: { id: "exec_1", workflowId: "wf_other", status: "success" },
+      logs: [{
+        id: "log_1", executionId: "exec_other", nodeId: "execute", nodeName: "Open grace", nodeType: "web3/write-contract", status: "success",
+        input: {}, output: { success: true, transactionHash: hash }, error: null,
+        duration: "1000", startedAt: "2026-08-12T12:00:00Z", completedAt: "2026-08-12T12:00:01Z",
+      }],
+    }, hash, "exec_1", "wf_1")).toBe(false);
   });
 
   it("marks a transaction ambiguous when KeeperHub's write log is missing", () => {

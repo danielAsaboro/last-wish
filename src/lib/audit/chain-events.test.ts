@@ -32,4 +32,17 @@ describe("buildChainAuditEvents", () => {
       { eventName: "Heartbeat", blockNumber: null, transactionHash, logIndex: 1, args: {} },
     ], new Map([[42n, 1_800_000_000n]]))).toEqual([]);
   });
+
+  it("uses the explicit transaction actor instead of a policy value or withdrawal recipient", () => {
+    const owner = "0x1111111111111111111111111111111111111111" as const;
+    const guardian = "0x2222222222222222222222222222222222222222" as const;
+    const recipient = "0x3333333333333333333333333333333333333333" as const;
+    const events = buildChainAuditEvents([
+      { eventName: "PolicyUpdated", blockNumber: 42n, transactionHash, logIndex: 1, args: { guardian, actor: owner } },
+      { eventName: "Withdrawal", blockNumber: 42n, transactionHash, logIndex: 2, args: { recipient, actor: owner } },
+      { eventName: "PolicyUpdated", blockNumber: 42n, transactionHash, logIndex: 3, args: { guardian } },
+    ], new Map([[42n, 1_800_000_000n]]));
+
+    expect(events.map((event) => event.actor)).toEqual([owner, owner, undefined]);
+  });
 });

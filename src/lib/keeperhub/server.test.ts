@@ -3,6 +3,23 @@ import { describe, expect, it, vi } from "vitest";
 import { KeeperHubClient } from "./server";
 
 describe("KeeperHubClient", () => {
+  it("creates workflows through the documented endpoint and unwraps API data", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ data: { id: "wf_123", name: "LastWish" } }));
+    const client = new KeeperHubClient({ apiKey: "kh_secret", fetcher });
+    await expect(client.createWorkflow({ name: "LastWish", description: "policy", enabled: false, nodes: [], edges: [] })).resolves.toEqual({ id: "wf_123", name: "LastWish" });
+    expect(fetcher).toHaveBeenCalledWith(
+      "https://app.keeperhub.com/api/workflows/create",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("lists organization workflows for idempotent registration", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ data: [{ id: "wf_123", name: "LastWish", description: "lastwish:key" }] }));
+    const client = new KeeperHubClient({ apiKey: "kh_secret", fetcher });
+    await expect(client.listWorkflows()).resolves.toEqual([{ id: "wf_123", name: "LastWish", description: "lastwish:key" }]);
+    expect(fetcher).toHaveBeenCalledWith("https://app.keeperhub.com/api/workflows", expect.any(Object));
+  });
+
   it("keeps the credential in the authorization header and parses enabled chains", async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
       Response.json({ chains: [{ chainId: 84532, name: "Base Sepolia", isEnabled: true, isTestnet: true }] }),

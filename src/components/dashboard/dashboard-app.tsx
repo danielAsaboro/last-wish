@@ -21,6 +21,7 @@ import {
 import { buildChainAuditEvents } from "@/lib/audit/chain-events";
 import { buildAuditTimeline, type ChainAuditEvent } from "@/lib/audit/timeline";
 import { factoryAbi, vaultAbi } from "@/lib/contracts/abi";
+import { buildWorkflowAuthorizationMessage } from "@/lib/keeperhub/authorization";
 import { buildPolicyArguments, type PolicyDraft } from "@/lib/succession/draft";
 import { labelsFromDraft, mergeBeneficiaryLabels, parseBeneficiaryLabels } from "@/lib/succession/labels";
 import { buildLifecycleSummary } from "@/lib/succession/status";
@@ -46,12 +47,13 @@ type LoadedVault = {
   gracePeriod: bigint;
   lastHeartbeat: bigint;
   pendingAt: bigint;
+  deployedAtBlock: bigint;
   observedAt: bigint;
   beneficiaries: LoadedBeneficiary[];
 };
 
 type Notice = { tone: "success" | "warning" | "danger"; text: string };
-type WorkflowRegistration = { workflowId: string; expectedStatus: "PENDING" | "SETTLED" };
+type WorkflowRegistration = { workflowId: string; expectedStatus: "PENDING" | "SETTLED"; policyVersion: string };
 
 const factoryAddress = process.env.NEXT_PUBLIC_LASTWISH_FACTORY_ADDRESS;
 const statusNames: VaultStatus[] = ["ACTIVE", "PENDING", "VETOED", "READY", "SETTLED"];
@@ -84,7 +86,7 @@ export function DashboardApp() {
   const refreshVault = useCallback(async () => {
     if (!vaultAddress || !publicClient) return;
     try {
-      const [owner, guardian, policyVersion, statusCode, beneficiaryCount, heartbeatInterval, gracePeriod, lastHeartbeat, pendingAt, balance] = await Promise.all([
+      const [owner, guardian, policyVersion, statusCode, beneficiaryCount, heartbeatInterval, gracePeriod, lastHeartbeat, pendingAt, deployedAtBlock, balance] = await Promise.all([
         publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "owner" }),
         publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "guardian" }),
         publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "policyVersion" }),
@@ -94,6 +96,7 @@ export function DashboardApp() {
         publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "gracePeriod" }),
         publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "lastHeartbeat" }),
         publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "pendingAt" }),
+        publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "deployedAtBlock" }),
         publicClient.getBalance({ address: vaultAddress }),
       ]);
       const addresses = await Promise.all(
@@ -101,6 +104,18 @@ export function DashboardApp() {
           publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "beneficiaryAt", args: [BigInt(index)] }),
         ),
       );
+      if (!factoryAddress || !isAddress(factoryAddress)) {
+        throw new Error("The trusted LastWish factory is not configured.");
+      }
+      const registeredVault = await publicClient.readContract({
+        address: getAddress(factoryAddress),
+        abi: factoryAbi,
+        functionName: "vaultOf",
+        args: [owner],
+      });
+      if (registeredVault.toLowerCase() !== vaultAddress.toLowerCase()) {
+        throw new Error("This address is not a vault created by the configured LastWish factory.");
+      }
       const chainBeneficiaries = await Promise.all(addresses.map(async (address) => {
         const [shareBps, claimableWei] = await Promise.all([
           publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "shareBps", args: [address] }),
@@ -121,18 +136,23 @@ export function DashboardApp() {
         gracePeriod,
         lastHeartbeat,
         pendingAt,
+        deployedAtBlock,
         observedAt: BigInt(Math.floor(Date.now() / 1000)),
         beneficiaries,
       });
       window.localStorage.setItem(`lastwish:vault:${preferredChain.id}`, vaultAddress);
 
-      const deploymentBlock = BigInt(process.env.NEXT_PUBLIC_LASTWISH_DEPLOYMENT_BLOCK ?? "0");
-      const logs = await publicClient.getContractEvents({ address: vaultAddress, abi: vaultAbi, fromBlock: deploymentBlock });
-      const blockNumbers = [...new Set(logs.map((log) => log.blockNumber).filter((block): block is bigint => block !== null))];
-      const missingBlocks = blockNumbers.filter((blockNumber) => !blockTimestampCache.current.has(blockNumber));
-      const blocks = await Promise.all(missingBlocks.map((blockNumber) => publicClient.getBlock({ blockNumber })));
-      for (const block of blocks) blockTimestampCache.current.set(block.number, block.timestamp);
-      setAuditEvents(buildChainAuditEvents(logs, blockTimestampCache.current));
+      try {
+        const logs = await publicClient.getContractEvents({ address: vaultAddress, abi: vaultAbi, fromBlock: deployedAtBlock });
+        const blockNumbers = [...new Set(logs.map((log) => log.blockNumber).filter((block): block is bigint => block !== null))];
+        const missingBlocks = blockNumbers.filter((blockNumber) => !blockTimestampCache.current.has(blockNumber));
+        const blocks = await Promise.all(missingBlocks.map((blockNumber) => publicClient.getBlock({ blockNumber })));
+        for (const block of blocks) blockTimestampCache.current.set(block.number, block.timestamp);
+        setAuditEvents(buildChainAuditEvents(logs, blockTimestampCache.current));
+      } catch (error) {
+        setAuditEvents([]);
+        setNotice({ tone: "warning", text: `Vault loaded, but audit indexing is temporarily unavailable: ${errorMessage(error)}` });
+      }
     } catch (error) {
       setVault(undefined);
       setNotice({ tone: "danger", text: `Could not read this vault on ${preferredChain.name}: ${errorMessage(error)}` });
@@ -166,7 +186,7 @@ export function DashboardApp() {
   const refreshEvidence = useCallback(async (override?: WorkflowRegistration[]) => {
     if (!vaultAddress) return;
     const registrations = override ?? readWorkflowRegistrations(vaultAddress);
-    setWorkflowCount(registrations.length);
+    setWorkflowCount(registrations.filter((registration) => registration.policyVersion === vault?.policyVersion.toString()).length);
     if (registrations.length === 0) { setKeeperEvidence([]); return; }
     try {
       const response = await fetch("/api/keeperhub/evidence", {
@@ -185,7 +205,7 @@ export function DashboardApp() {
     } catch {
       // Preserve the last reconciled evidence until a later read succeeds.
     }
-  }, [vaultAddress]);
+  }, [vault?.policyVersion, vaultAddress]);
 
   useEffect(() => {
     if (!vaultAddress) return;
@@ -209,7 +229,7 @@ export function DashboardApp() {
 
   async function executeSimpleAction(action: Exclude<DashboardAction, "fund" | "withdraw" | "update-policy" | "register">) {
     if (!walletClient || !vaultAddress || !publicClient) return;
-    const functionName = { heartbeat: "heartbeat", veto: "vetoSettlement", finalize: "finalizeSettlement", claim: "claim" }[action] as "heartbeat" | "vetoSettlement" | "finalizeSettlement" | "claim";
+    const functionName = { heartbeat: "heartbeat", veto: "vetoSettlement", claim: "claim" }[action] as "heartbeat" | "vetoSettlement" | "claim";
     setPendingAction(action); setNotice(null);
     setTransactionProgress({ label: labelForAction(action), stage: "AWAITING_SIGNATURE" });
     try {
@@ -267,6 +287,7 @@ export function DashboardApp() {
       setTransactionProgress({ label: "Update policy", stage: "CONFIRMING", transactionHash: hash });
       const receipt = assertSuccessfulReceipt(await publicClient.waitForTransactionReceipt({ hash }));
       window.localStorage.setItem(`lastwish:labels:${preferredChain.id}:${vaultAddress}`, JSON.stringify(labelsFromDraft(draft.beneficiaries)));
+      setWorkflowCount(0);
       setComposer(null); setNotice({ tone: "success", text: `Policy update confirmed in block ${receipt.blockNumber}. The heartbeat clock reset.` });
       await refreshVault();
     } catch (error) { setNotice({ tone: "danger", text: errorMessage(error) }); }
@@ -292,22 +313,51 @@ export function DashboardApp() {
   }
 
   async function registerKeeperHub() {
-    if (!vaultAddress) return;
+    if (!vaultAddress || !vault || !walletClient || !account) return;
     setPendingAction("register");
     try {
-      const response = await fetch("/api/keeperhub/workflows", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ chainId: preferredChain.id, vault: vaultAddress, scheduleCron: "*/5 * * * *" }) });
+      const scheduleCron = "*/5 * * * *";
+      const expiresAt = Math.floor(Date.now() / 1_000) + 300;
+      setTransactionProgress({ label: "Authorize KeeperHub setup", stage: "AWAITING_SIGNATURE" });
+      const signature = await walletClient.signMessage({
+        account,
+        message: buildWorkflowAuthorizationMessage({
+          chainId: preferredChain.id,
+          vault: vaultAddress,
+          policyVersion: vault.policyVersion,
+          scheduleCron,
+          expiresAt,
+        }),
+      });
+      setTransactionProgress(undefined);
+      const response = await fetch("/api/keeperhub/workflows", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chainId: preferredChain.id,
+          vault: vaultAddress,
+          scheduleCron,
+          policyVersion: vault.policyVersion.toString(),
+          expiresAt,
+          signer: account,
+          signature,
+        }),
+      });
       const body = await response.json();
       if (!response.ok) throw new Error(body.error ?? "KeeperHub registration failed");
       const registrations: WorkflowRegistration[] = body.workflows.map((workflow: { workflowId: string; name: string }) => ({
         workflowId: workflow.workflowId,
         expectedStatus: workflow.name.includes("finalize") ? "SETTLED" : "PENDING",
+        policyVersion: vault.policyVersion.toString(),
       }));
-      window.localStorage.setItem(`lastwish:workflows:${preferredChain.id}:${vaultAddress}`, JSON.stringify(registrations));
+      const history = readWorkflowRegistrations(vaultAddress);
+      const combined = [...history.filter((item) => !registrations.some((current) => current.workflowId === item.workflowId)), ...registrations].slice(-4);
+      window.localStorage.setItem(`lastwish:workflows:${preferredChain.id}:${vaultAddress}`, JSON.stringify(combined));
       setWorkflowCount(registrations.length);
-      await refreshEvidence(registrations);
+      await refreshEvidence(combined);
       setNotice({ tone: "success", text: `KeeperHub registered and preflighted ${registrations.length} scheduled workflows.` });
     } catch (error) { setNotice({ tone: "danger", text: errorMessage(error) }); }
-    finally { setPendingAction(null); }
+    finally { setPendingAction(null); setTransactionProgress(undefined); }
   }
 
   return <DashboardView
@@ -319,6 +369,7 @@ export function DashboardApp() {
     vaultAddress={vaultAddress}
     balanceLabel={vault ? `${formatEther(vault.balanceWei)} ETH` : "—"}
     policyVersion={vault?.policyVersion.toString() ?? "—"}
+    canRegisterAutomation={workflowCount === 0}
     beneficiaries={(vault?.beneficiaries ?? []).map((beneficiary) => ({ label: beneficiary.label, address: beneficiary.address, shareLabel: `${beneficiary.shareBps / 100}%`, claimed: vault?.status === "SETTLED" && beneficiary.claimableWei === 0n }))}
     canClaim={Boolean(account && vault?.beneficiaries.some((beneficiary) => beneficiary.address.toLowerCase() === account.toLowerCase() && beneficiary.claimableWei > 0n))}
     auditItems={auditItems}
@@ -421,7 +472,7 @@ export function PolicyEditor({ owner, mode, pending, initial, onSubmit }: { owne
       <label>Guardian address <span>Can veto, never redirect</span><input value={guardian} onChange={(event) => setGuardian(event.target.value)} placeholder="0x…" /></label>
       <div className="beneficiary-editor"><div className="form-label">Beneficiaries <span>Shares must total 100%</span></div>
         {beneficiaries.map((beneficiary, index) => <div className="beneficiary-row" key={index}>
-          <input aria-label={`Beneficiary ${index + 1} label`} placeholder="Name or label" value={beneficiary.label} onChange={(event) => setBeneficiaries(beneficiaries.map((item, itemIndex) => itemIndex === index ? { ...item, label: event.target.value } : item))} />
+          <input aria-label={`Beneficiary ${index + 1} label`} maxLength={60} placeholder="Name or label" value={beneficiary.label} onChange={(event) => setBeneficiaries(beneficiaries.map((item, itemIndex) => itemIndex === index ? { ...item, label: event.target.value } : item))} />
           <input aria-label={`Beneficiary ${index + 1} address`} placeholder="0x…" value={beneficiary.address} onChange={(event) => setBeneficiaries(beneficiaries.map((item, itemIndex) => itemIndex === index ? { ...item, address: event.target.value } : item))} />
           <label><input aria-label={`Beneficiary ${index + 1} share`} type="number" min="0.01" max="100" step="0.01" value={beneficiary.shareBps / 100} onChange={(event) => setBeneficiaries(beneficiaries.map((item, itemIndex) => itemIndex === index ? { ...item, shareBps: Math.round(Number(event.target.value) * 100) } : item))} />%</label>
           {beneficiaries.length > 1 && <button aria-label={`Remove beneficiary ${index + 1}`} onClick={() => setBeneficiaries(beneficiaries.filter((_, itemIndex) => itemIndex !== index))}>×</button>}
@@ -447,19 +498,19 @@ export function PolicyEditor({ owner, mode, pending, initial, onSubmit }: { owne
 }
 
 function errorMessage(error: unknown) { if (typeof error === "object" && error && "shortMessage" in error && typeof error.shortMessage === "string") return error.shortMessage; return error instanceof Error ? error.message : "The operation failed."; }
-function labelForAction(action: string) { return ({ heartbeat: "Heartbeat", veto: "Guardian veto", finalize: "Settlement finalization", claim: "Beneficiary claim" } as Record<string, string>)[action] ?? action; }
+function labelForAction(action: string) { return ({ heartbeat: "Heartbeat", veto: "Guardian veto", claim: "Beneficiary claim" } as Record<string, string>)[action] ?? action; }
 
 function readWorkflowRegistrations(vault: Address): WorkflowRegistration[] {
   try {
     const parsed = JSON.parse(window.localStorage.getItem(`lastwish:workflows:${preferredChain.id}:${vault}`) ?? "[]") as unknown;
     if (!Array.isArray(parsed)) return [];
-    return parsed.flatMap((item, index) => {
-      if (typeof item === "string") return [{ workflowId: item, expectedStatus: index === 1 ? "SETTLED" : "PENDING" } as WorkflowRegistration];
+    return parsed.flatMap((item) => {
+      if (typeof item === "string") return [];
       if (typeof item !== "object" || item === null) return [];
       const candidate = item as Record<string, unknown>;
-      if (typeof candidate.workflowId !== "string" || (candidate.expectedStatus !== "PENDING" && candidate.expectedStatus !== "SETTLED")) return [];
-      return [{ workflowId: candidate.workflowId, expectedStatus: candidate.expectedStatus } as WorkflowRegistration];
-    });
+      if (typeof candidate.workflowId !== "string" || (candidate.expectedStatus !== "PENDING" && candidate.expectedStatus !== "SETTLED") || typeof candidate.policyVersion !== "string") return [];
+      return [{ workflowId: candidate.workflowId, expectedStatus: candidate.expectedStatus, policyVersion: candidate.policyVersion } as WorkflowRegistration];
+    }).slice(-4);
   } catch {
     return [];
   }

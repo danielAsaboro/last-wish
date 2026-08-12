@@ -44,6 +44,10 @@ contract LastWishVaultTest is Test {
         new LastWishVault(owner, guardian, duplicate, shares, 59, 1 hours, true);
     }
 
+    function testRecordsItsDeploymentBlockForBoundedAuditIndexing() public view {
+        assertEq(vault.deployedAtBlock(), block.number);
+    }
+
     function testConstructorRejectsOverlappingOwnerGuardianAndBeneficiaryRoles() public {
         (address[] memory beneficiaries, uint16[] memory shares) = _policy();
 
@@ -193,6 +197,27 @@ contract LastWishVaultTest is Test {
         assertEq(vault.policyVersion(), 2);
         assertEq(vault.lastHeartbeat(), block.timestamp);
         assertEq(vault.shareBps(beneficiaryA), 7_000);
+    }
+
+    function testKeeperCallsAreBoundToTheExpectedPolicyVersion() public {
+        uint256 originalVersion = vault.policyVersion();
+        (address[] memory beneficiaries, uint16[] memory shares) = _policy();
+        vm.prank(owner);
+        vault.updatePolicy(guardian, beneficiaries, shares, 1 hours, 1 hours, true);
+
+        vm.warp(vault.lastHeartbeat() + 1 hours);
+        assertFalse(vault.canOpenSettlementForPolicy(originalVersion));
+        assertTrue(vault.canOpenSettlementForPolicy(vault.policyVersion()));
+        vm.expectRevert(LastWishVault.PolicyVersionMismatch.selector);
+        vault.openSettlementForPolicy(originalVersion);
+        vault.openSettlementForPolicy(vault.policyVersion());
+
+        vm.warp(vault.pendingAt() + 1 hours);
+        assertFalse(vault.canFinalizeSettlementForPolicy(originalVersion));
+        vm.expectRevert(LastWishVault.PolicyVersionMismatch.selector);
+        vault.finalizeSettlementForPolicy(originalVersion);
+        vault.finalizeSettlementForPolicy(vault.policyVersion());
+        assertTrue(vault.settled());
     }
 
     function testFactoryTracksVaultsByOwner() public {

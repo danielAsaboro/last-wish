@@ -4,7 +4,9 @@ import { z } from "zod";
 import { baseSepolia, sepolia } from "@/lib/chains";
 import { vaultAbi } from "@/lib/contracts/abi";
 import { classifyWorkflowEvidence, verifyKeeperHubWriteLog } from "@/lib/keeperhub/client";
+import { readVaultStatusAtBlock } from "@/lib/keeperhub/reconcile";
 import { keeperHubClientFromEnv } from "@/lib/keeperhub/server";
+import { isWorkflowForVault } from "@/lib/keeperhub/workflow";
 import type { KeeperHubEvidence, VaultStatus } from "@/lib/succession/types";
 
 const requestSchema = z.object({
@@ -39,6 +41,13 @@ export async function POST(request: Request) {
     const statusCode = await rpc.readContract({ address: vault, abi: vaultAbi, functionName: "status" });
     const observedVaultStatus = statusNames[Number(statusCode)] ?? "RECOVERY_REQUIRED";
     const evidence: KeeperHubEvidence[] = [];
+    const workflows = await keeperHub.listWorkflows();
+    const authorizedWorkflowIds = new Set(workflows
+      .filter((workflow) => isWorkflowForVault(workflow, parsed.data.chainId, vault))
+      .map((workflow) => workflow.id));
+    if (parsed.data.registrations.some((registration) => !authorizedWorkflowIds.has(registration.workflowId))) {
+      return Response.json({ configured: true, error: "A requested workflow is not registered for this vault." }, { status: 403 });
+    }
 
     for (const registration of parsed.data.registrations) {
       const executions = (await keeperHub.listWorkflowExecutions(registration.workflowId)).slice(0, 20);
@@ -52,17 +61,23 @@ export async function POST(request: Request) {
         try {
           const keeperHubLogs = await keeperHub.getWorkflowExecutionLogs(execution.id);
           const receipt = await rpc.getTransactionReceipt({ hash: transactionHash });
+          const statusAtReceipt = await readVaultStatusAtBlock(rpc, vault, receipt.blockNumber);
           const expectedEvent = registration.expectedStatus === "PENDING" ? "SettlementOpened" : "SettlementFinalized";
           const eventVerified = parseEventLogs({ abi: vaultAbi, logs: receipt.logs }).some(
             (log) => log.address.toLowerCase() === vault.toLowerCase() && log.eventName === expectedEvent,
           );
           evidence.push(classifyWorkflowEvidence(execution, registration.expectedStatus, {
-            keeperWriteVerified: verifyKeeperHubWriteLog(keeperHubLogs, transactionHash),
+            keeperWriteVerified: verifyKeeperHubWriteLog(
+              keeperHubLogs,
+              transactionHash,
+              execution.id,
+              registration.workflowId,
+            ),
             receiptStatus: receipt.status,
             eventVerified,
             blockNumber: receipt.blockNumber,
             gasUsed: receipt.gasUsed,
-            observedVaultStatus,
+            observedVaultStatus: statusAtReceipt,
           }));
         } catch {
           evidence.push(classifyWorkflowEvidence(execution, registration.expectedStatus, { observedVaultStatus }));

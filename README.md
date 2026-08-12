@@ -14,8 +14,8 @@ LastWish is not a legal will, proof-of-death service, probate replacement, or ju
 - Injected EVM wallet connection with Base Sepolia preference and Sepolia fallback
 - Role-sensitive owner, guardian, beneficiary, and observer controls
 - Exact heartbeat/grace lifecycle deadlines with contract-gated next-action guidance
-- KeeperHub workflow registration with disabled-first simulation and explicit activation
-- KeeperHub run history reconciled against its matching successful write-step log, the RPC receipt, expected contract event, and final vault state
+- Owner-signed KeeperHub workflow registration with factory provenance, policy-bound calls, stale-workflow retirement, duplicate reconciliation, disabled-first simulation, and explicit activation
+- KeeperHub run history reconciled against its matching execution/write-step log, RPC receipt, expected contract event, and vault state at the receipt block
 - AI SDK 7 Policy Copilot with Zod-structured output; it drafts timing and shares but cannot sign, submit calldata, or decide eligibility
 - Chain and KeeperHub evidence in a unified, timestamped audit trail with actors, amounts, blocks, gas, identifiers, and explicit recovery-required outcomes
 
@@ -67,16 +67,17 @@ Use a dedicated funded testnet key and do not place it in a committed file. Afte
 
 ## KeeperHub safety model
 
-Each vault receives two scheduled workflows: one calls `canOpenSettlement` before `openSettlement`; the other calls `canFinalizeSettlement` before `finalizeSettlement`. Workflows are created disabled, simulated, and enabled only after preflight succeeds.
+Each vault policy receives two scheduled workflows: one calls `canOpenSettlementForPolicy` before `openSettlementForPolicy`; the other calls `canFinalizeSettlementForPolicy` before `finalizeSettlementForPolicy`. Workflows are canonicalized while disabled, simulated, and enabled only after preflight succeeds. Prior-policy schedules are disabled and stale policy calls are rejected onchain.
 
-A workflow transaction is shown as verified only when all three checks agree:
+A workflow transaction is shown as verified only when all four checks agree:
 
 1. KeeperHub records a successful run and transaction hash.
-2. An independent RPC read finds a successful receipt containing the expected vault event.
-3. The RPC receipt contains the expected event from the target vault.
-4. The vault resolves to the expected final state.
+2. The matching successful KeeperHub write-step log records the same execution, workflow, and transaction hash.
+3. An independent RPC read finds a successful receipt containing the expected event from the target vault.
+4. The vault resolves to the expected state at the receipt block.
 
 Missing or contradictory evidence is classified as recovery-required and is never blindly rebroadcast.
+Settlement opening and finalization are not exposed as direct wallet actions in the app; KeeperHub is the shipped settlement execution path.
 
 ## Verification
 

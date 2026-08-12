@@ -18,6 +18,8 @@ export type ContractCallRequest = {
   simulate?: boolean;
 };
 
+export type KeeperHubWorkflowSummary = { id: string; name: string; description?: string; createdAt?: string };
+
 export class KeeperHubClient {
   private readonly apiKey: string;
   private readonly baseUrl: string;
@@ -36,18 +38,31 @@ export class KeeperHubClient {
   }
 
   async createWorkflow(definition: KeeperHubWorkflowDefinition): Promise<Record<string, unknown>> {
-    const { body } = await this.request("/api/workflows", {
+    const { body } = await this.request("/api/workflows/create", {
       method: "POST",
       body: JSON.stringify(definition),
     });
-    return body as Record<string, unknown>;
+    return unwrapData(body) as Record<string, unknown>;
+  }
+
+  async listWorkflows(): Promise<KeeperHubWorkflowSummary[]> {
+    const { body } = await this.request("/api/workflows");
+    const candidate = unwrapData(body);
+    if (!Array.isArray(candidate)) throw new Error("KeeperHub returned an invalid workflow list.");
+    return candidate.flatMap((item) => {
+      if (typeof item !== "object" || item === null) return [];
+      const { id, name, description, createdAt } = item as Record<string, unknown>;
+      return typeof id === "string" && typeof name === "string"
+        ? [{ id, name, ...(typeof description === "string" ? { description } : {}), ...(typeof createdAt === "string" ? { createdAt } : {}) }]
+        : [];
+    });
   }
 
   async simulateWorkflow(workflowId: string): Promise<Record<string, unknown>> {
     const { body } = await this.request(`/api/workflows/${encodeURIComponent(workflowId)}/simulate`, {
       method: "POST",
     });
-    return body as Record<string, unknown>;
+    return unwrapData(body) as Record<string, unknown>;
   }
 
   async updateWorkflow(workflowId: string, patch: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -55,7 +70,7 @@ export class KeeperHubClient {
       method: "PATCH",
       body: JSON.stringify(patch),
     });
-    return body as Record<string, unknown>;
+    return unwrapData(body) as Record<string, unknown>;
   }
 
   async listWorkflowExecutions(workflowId: string): Promise<KeeperHubWorkflowExecution[]> {
@@ -65,7 +80,7 @@ export class KeeperHubClient {
 
   async getWorkflowExecutionLogs(executionId: string): Promise<unknown> {
     const { body } = await this.request(`/api/workflows/executions/${encodeURIComponent(executionId)}/logs`);
-    return body;
+    return unwrapData(body);
   }
 
   async contractCall(request: ContractCallRequest, idempotencyKey?: string): Promise<Record<string, unknown>> {
@@ -81,7 +96,7 @@ export class KeeperHubClient {
     const { body, response } = await this.request(`/api/execute/${encodeURIComponent(executionId)}/status`);
     const hint = response.headers.get("X-Poll-Interval-Hint");
     return {
-      execution: body as Record<string, unknown>,
+      execution: unwrapData(body) as Record<string, unknown>,
       pollAfterMs: hint && Number.isFinite(Number(hint)) ? Number(hint) : undefined,
     };
   }
@@ -116,6 +131,12 @@ export class KeeperHubClient {
     }
     return { body, response };
   }
+}
+
+function unwrapData(body: unknown): unknown {
+  return typeof body === "object" && body !== null && "data" in body
+    ? (body as { data: unknown }).data
+    : body;
 }
 
 export function keeperHubClientFromEnv(): KeeperHubClient {

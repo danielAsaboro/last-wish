@@ -19,6 +19,7 @@ contract LastWishVault is ReentrancyGuard {
 
     address public immutable owner;
     bool public immutable testnetDemo;
+    uint256 public immutable deployedAtBlock;
     address public guardian;
     uint256 public heartbeatInterval;
     uint256 public gracePeriod;
@@ -51,14 +52,15 @@ contract LastWishVault is ReentrancyGuard {
     error AlreadySettled();
     error NothingToClaim();
     error TransferFailed();
+    error PolicyVersionMismatch();
 
     event Deposit(address indexed sender, uint256 amount);
     event Heartbeat(address indexed owner, uint256 indexed policyVersion, uint256 timestamp);
-    event PolicyUpdated(uint256 indexed policyVersion, address indexed guardian);
+    event PolicyUpdated(uint256 indexed policyVersion, address indexed guardian, address indexed actor);
     event SettlementOpened(uint256 indexed policyVersion, uint256 pendingAt, address indexed caller);
     event SettlementVetoedByGuardian(uint256 indexed policyVersion, address indexed guardian);
     event SettlementFinalized(uint256 indexed policyVersion, uint256 balance, address indexed caller);
-    event Withdrawal(address indexed recipient, uint256 amount);
+    event Withdrawal(address indexed recipient, uint256 amount, address indexed actor);
     event Claimed(address indexed beneficiary, uint256 amount);
 
     modifier onlyOwner() {
@@ -78,6 +80,7 @@ contract LastWishVault is ReentrancyGuard {
         if (owner_ == address(0)) revert ZeroAddress();
         owner = owner_;
         testnetDemo = testnetDemo_;
+        deployedAtBlock = block.number;
         policyVersion = 1;
         _setPolicy(guardian_, beneficiaries_, shares_, heartbeatInterval_, gracePeriod_);
         lastHeartbeat = block.timestamp;
@@ -114,6 +117,16 @@ contract LastWishVault is ReentrancyGuard {
         return !settled && !vetoed && pendingAt != 0 && block.timestamp >= pendingAt + gracePeriod;
     }
 
+    function canOpenSettlementForPolicy(uint256 expectedPolicyVersion) external view returns (bool) {
+        return expectedPolicyVersion == policyVersion && !settled && !vetoed && pendingAt == 0
+            && block.timestamp >= lastHeartbeat + heartbeatInterval;
+    }
+
+    function canFinalizeSettlementForPolicy(uint256 expectedPolicyVersion) external view returns (bool) {
+        return expectedPolicyVersion == policyVersion && !settled && !vetoed && pendingAt != 0
+            && block.timestamp >= pendingAt + gracePeriod;
+    }
+
     function heartbeat() external onlyOwner {
         if (settled) revert AlreadySettled();
         lastHeartbeat = block.timestamp;
@@ -138,7 +151,7 @@ contract LastWishVault is ReentrancyGuard {
             ++policyVersion;
         }
         lastHeartbeat = block.timestamp;
-        emit PolicyUpdated(policyVersion, guardian_);
+        emit PolicyUpdated(policyVersion, guardian_, msg.sender);
         emit Heartbeat(msg.sender, policyVersion, block.timestamp);
     }
 
@@ -148,10 +161,19 @@ contract LastWishVault is ReentrancyGuard {
         if (recipient == address(0)) revert ZeroAddress();
         (bool success,) = recipient.call{value: amount}("");
         if (!success) revert TransferFailed();
-        emit Withdrawal(recipient, amount);
+        emit Withdrawal(recipient, amount, msg.sender);
     }
 
     function openSettlement() external {
+        _openSettlement();
+    }
+
+    function openSettlementForPolicy(uint256 expectedPolicyVersion) external {
+        if (expectedPolicyVersion != policyVersion) revert PolicyVersionMismatch();
+        _openSettlement();
+    }
+
+    function _openSettlement() internal {
         if (settled) revert AlreadySettled();
         if (pendingAt != 0 || vetoed) revert NotActive();
         if (block.timestamp < lastHeartbeat + heartbeatInterval) revert HeartbeatStillActive();
@@ -167,6 +189,15 @@ contract LastWishVault is ReentrancyGuard {
     }
 
     function finalizeSettlement() external {
+        _finalizeSettlement();
+    }
+
+    function finalizeSettlementForPolicy(uint256 expectedPolicyVersion) external {
+        if (expectedPolicyVersion != policyVersion) revert PolicyVersionMismatch();
+        _finalizeSettlement();
+    }
+
+    function _finalizeSettlement() internal {
         if (settled) revert AlreadySettled();
         if (vetoed) revert SettlementVetoed();
         if (pendingAt == 0) revert NotPending();

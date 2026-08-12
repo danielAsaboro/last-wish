@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { mergeBeneficiaryLabels, parseBeneficiaryLabels } from "./labels";
+import { labelsFromDraft, mergeBeneficiaryLabels, parseBeneficiaryLabels } from "./labels";
 
 describe("beneficiary display labels", () => {
   it("merges saved labels by normalized address without changing chain values", () => {
@@ -21,5 +21,21 @@ describe("beneficiary display labels", () => {
     expect(parseBeneficiaryLabels(JSON.stringify({
       "0x1111111111111111111111111111111111111111": "x".repeat(61),
     }))).toEqual({});
+  });
+
+  it("preserves valid entries when another locally stored label is invalid", () => {
+    expect(parseBeneficiaryLabels(JSON.stringify({
+      "0x1111111111111111111111111111111111111111": "Amara",
+      "0x2222222222222222222222222222222222222222": "x".repeat(61),
+      wrong: "Ignored",
+    }))).toEqual({ "0x1111111111111111111111111111111111111111": "Amara" });
+  });
+
+  it("does not persist invalid draft label metadata", () => {
+    expect(labelsFromDraft([
+      { address: "0x1111111111111111111111111111111111111111", label: " Amara " },
+      { address: "not-an-address", label: "Ignored" },
+      { address: "0x2222222222222222222222222222222222222222", label: "x".repeat(61) },
+    ])).toEqual({ "0x1111111111111111111111111111111111111111": "Amara" });
   });
 });

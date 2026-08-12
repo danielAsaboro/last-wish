@@ -5,7 +5,7 @@ import type { LifecycleSummary } from "@/lib/succession/status";
 import type { Address, VaultStatus } from "@/lib/succession/types";
 
 export type DashboardRole = "owner" | "guardian" | "beneficiary" | "observer";
-export type DashboardAction = "heartbeat" | "update-policy" | "withdraw" | "veto" | "finalize" | "claim" | "fund" | "register";
+export type DashboardAction = "heartbeat" | "update-policy" | "withdraw" | "veto" | "claim" | "fund" | "register";
 export type WalletTransactionProgress = { label: string; stage: "AWAITING_SIGNATURE" | "CONFIRMING"; transactionHash?: Address };
 
 export type DashboardViewProps = {
@@ -17,6 +17,7 @@ export type DashboardViewProps = {
   vaultAddress?: string;
   balanceLabel: string;
   policyVersion: string;
+  canRegisterAutomation: boolean;
   beneficiaries: Array<{ label: string; address: string; shareLabel: string; claimed: boolean }>;
   canClaim: boolean;
   auditItems: AuditTimelineItem[];
@@ -86,12 +87,12 @@ export function DashboardView(props: DashboardViewProps) {
                 {props.lifecycle?.phase !== "OPEN_ELIGIBLE" && <ActionButton action="withdraw" label="Withdraw" {...props} />}
                 <ActionButton action="fund" label="Fund vault" {...props} />
               </>}
-              {props.role === "owner" && ["PENDING", "VETOED"].includes(props.status) && <ActionButton action="heartbeat" label="Reactivate vault" {...props} />}
-              {props.role === "guardian" && ["PENDING", "READY"].includes(props.status) && <ActionButton action="veto" label="Veto settlement" {...props} />}
-              {props.status === "READY" && <ActionButton action="finalize" label="Finalize through wallet" {...props} />}
+              {props.role === "owner" && ["PENDING", "VETOED", "READY"].includes(props.status) && <ActionButton action="heartbeat" label="Reactivate vault" {...props} />}
+              {props.role === "guardian" && props.status === "PENDING" && <ActionButton action="veto" label="Veto settlement" {...props} />}
+              {props.status === "READY" && <p className="completed-action">KeeperHub can finalize now · owner may still reactivate</p>}
               {props.role === "beneficiary" && props.status === "SETTLED" && props.canClaim && <ActionButton action="claim" label="Claim allocation" {...props} />}
               {props.role === "beneficiary" && props.status === "SETTLED" && !props.canClaim && <p className="completed-action">Allocation already claimed ✓</p>}
-              {props.role === "owner" && props.status !== "SETTLED" && <ActionButton action="register" label="Register KeeperHub" {...props} />}
+              {props.role === "owner" && props.status !== "SETTLED" && props.canRegisterAutomation && <ActionButton action="register" label="Register KeeperHub" {...props} />}
             </div>
           </section>
 

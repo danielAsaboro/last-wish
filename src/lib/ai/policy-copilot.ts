@@ -48,6 +48,17 @@ export function isCopilotConfigured(env: Record<string, string | undefined> = pr
   return Boolean(env.OPENAI_API_KEY || env.AI_GATEWAY_API_KEY);
 }
 
+export function assertCopilotPreservesBeneficiaries(input: CopilotInput, draft: CopilotDraft): void {
+  const supplied = new Map(input.beneficiaries.map((beneficiary) => [
+    beneficiary.address.toLowerCase(),
+    beneficiary.label,
+  ]));
+  const preserved = draft.beneficiaries.length === supplied.size && draft.beneficiaries.every(
+    (beneficiary) => supplied.get(beneficiary.address.toLowerCase()) === beneficiary.label,
+  );
+  if (!preserved) throw new Error("The AI draft must preserve every supplied beneficiary address and label.");
+}
+
 export async function draftPolicyWithAi(input: unknown): Promise<CopilotDraft> {
   if (!isCopilotConfigured()) throw new Error("Policy Copilot is unavailable because no AI provider credential is configured.");
   const parsed = copilotInputSchema.parse(input);
@@ -59,9 +70,6 @@ export async function draftPolicyWithAi(input: unknown): Promise<CopilotDraft> {
     prompt: `Draft shares and timing for these supplied beneficiaries: ${JSON.stringify(parsed)}. Use days, not demo-length intervals.`,
   });
 
-  const supplied = new Set(parsed.beneficiaries.map((beneficiary) => beneficiary.address.toLowerCase()));
-  if (output.beneficiaries.some((beneficiary) => !supplied.has(beneficiary.address.toLowerCase()))) {
-    throw new Error("The AI draft changed a supplied beneficiary address.");
-  }
+  assertCopilotPreservesBeneficiaries(parsed, output);
   return output;
 }
