@@ -1,0 +1,67 @@
+import { openai } from "@ai-sdk/openai";
+import { generateText, Output } from "ai";
+import { z } from "zod";
+
+const addressSchema = z.string().regex(/^0x[a-fA-F0-9]{40}$/);
+
+export const copilotInputSchema = z
+  .object({
+    beneficiaries: z
+      .array(z.object({ label: z.string().trim().min(1).max(60), address: addressSchema }))
+      .min(1)
+      .max(10),
+    notes: z.string().trim().min(1).max(1_000),
+  })
+  .strict();
+
+export const copilotOutputSchema = z
+  .object({
+    beneficiaries: z
+      .array(
+        z.object({
+          label: z.string().trim().min(1).max(60),
+          address: addressSchema,
+          shareBps: z.number().int().min(1).max(10_000),
+        }),
+      )
+      .min(1)
+      .max(10),
+    heartbeatDays: z.number().int().min(1).max(365),
+    graceDays: z.number().int().min(1).max(90),
+    explanation: z.string().trim().min(20).max(800),
+  })
+  .superRefine((draft, context) => {
+    const total = draft.beneficiaries.reduce((sum, beneficiary) => sum + beneficiary.shareBps, 0);
+    if (total !== 10_000) {
+      context.addIssue({ code: "custom", path: ["beneficiaries"], message: "Shares must total 10,000 basis points" });
+    }
+    const unique = new Set(draft.beneficiaries.map((beneficiary) => beneficiary.address.toLowerCase()));
+    if (unique.size !== draft.beneficiaries.length) {
+      context.addIssue({ code: "custom", path: ["beneficiaries"], message: "Beneficiary addresses must be unique" });
+    }
+  });
+
+export type CopilotInput = z.infer<typeof copilotInputSchema>;
+export type CopilotDraft = z.infer<typeof copilotOutputSchema>;
+
+export function isCopilotConfigured(env: Record<string, string | undefined> = process.env): boolean {
+  return Boolean(env.OPENAI_API_KEY || env.AI_GATEWAY_API_KEY);
+}
+
+export async function draftPolicyWithAi(input: unknown): Promise<CopilotDraft> {
+  if (!isCopilotConfigured()) throw new Error("Policy Copilot is unavailable because no AI provider credential is configured.");
+  const parsed = copilotInputSchema.parse(input);
+  const { output } = await generateText({
+    model: openai(process.env.OPENAI_MODEL ?? "gpt-5-mini"),
+    output: Output.object({ schema: copilotOutputSchema }),
+    system:
+      "You draft unsigned digital-asset succession policy parameters. Never decide settlement eligibility, initiate transactions, provide legal advice, or alter supplied addresses. Shares must total exactly 10,000 basis points.",
+    prompt: `Draft shares and timing for these supplied beneficiaries: ${JSON.stringify(parsed)}. Use days, not demo-length intervals.`,
+  });
+
+  const supplied = new Set(parsed.beneficiaries.map((beneficiary) => beneficiary.address.toLowerCase()));
+  if (output.beneficiaries.some((beneficiary) => !supplied.has(beneficiary.address.toLowerCase()))) {
+    throw new Error("The AI draft changed a supplied beneficiary address.");
+  }
+  return output;
+}

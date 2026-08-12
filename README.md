@@ -1,36 +1,105 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# LastWish
 
-## Getting Started
+LastWish is a self-custodial, testnet digital-asset succession protocol. A holder creates and funds a dedicated native-ETH vault, names beneficiaries with fixed shares totaling 10,000 basis points, and records periodic heartbeats. If the heartbeat expires, KeeperHub can open an onchain grace period and later finalize settlement. A guardian may veto during grace, but cannot move funds or change beneficiaries.
 
-First, run the development server:
+LastWish is not a legal will, proof-of-death service, probate replacement, or jurisdiction-independent inheritance solution.
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+## What works
+
+- One `LastWishVault` per holder, deployed through `LastWishVaultFactory`
+- Owner heartbeat, policy updates, active-only withdrawal, and native ETH funding
+- Permissionless, contract-time-gated settlement opening and finalization
+- Guardian-only veto during the grace period
+- Deterministic allocation with final-recipient rounding and one-time pull claims
+- Injected EVM wallet connection with Base Sepolia preference and Sepolia fallback
+- Role-sensitive owner, guardian, beneficiary, and observer controls
+- KeeperHub workflow registration with disabled-first simulation and explicit activation
+- KeeperHub run history reconciled against the RPC receipt, expected contract event, and final vault state
+- AI SDK 7 Policy Copilot with Zod-structured output; it drafts timing and shares but cannot sign, submit calldata, or decide eligibility
+- Chain and KeeperHub evidence in a unified audit trail, including explicit recovery-required outcomes
+
+No fake balances, workflow runs, transaction hashes, or receipts are used. If credentials or deployment addresses are absent, the corresponding feature reports that it is unavailable.
+
+## Architecture
+
+```text
+Injected wallet ──signs──> LastWishVaultFactory / LastWishVault
+      │                              │
+      │                              ├── policy, heartbeat, grace, claims
+      │                              └── authoritative events and state
+      │
+Next.js dashboard ──reads──────────> testnet RPC
+      │
+      ├── server route ─────────────> KeeperHub workflow API
+      │                                  │
+      │                                  └── scheduled read → condition → write
+      │
+      └── server route ─────────────> AI SDK 7 Policy Copilot
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+The chain is the source of truth. Local storage contains only the last-viewed vault and KeeperHub workflow identifiers. KeeperHub and AI credentials remain server-only.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Local setup
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Requirements: Node.js 20+, npm, Foundry, an injected EVM wallet, and testnet ETH.
 
-## Learn More
+```bash
+npm install
+cp .env.example .env.local
+forge test
+npm test
+npm run dev
+```
 
-To learn more about Next.js, take a look at the following resources:
+Open `http://localhost:3000`. Configure `.env.local` with the selected testnet RPC URLs, the deployed factory address, and optional server credentials. Base Sepolia (`84532`) is the default; use Sepolia (`11155111`) only when KeeperHub chain preflight requires it.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Contract deployment
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```bash
+forge script script/Deploy.s.sol:DeployLastWish \
+  --rpc-url "$BASE_SEPOLIA_RPC_URL" \
+  --private-key "$DEPLOYER_PRIVATE_KEY" \
+  --broadcast
+```
 
-## Deploy on Vercel
+Use a dedicated funded testnet key and do not place it in a committed file. After deployment, verify the factory and set `NEXT_PUBLIC_LASTWISH_FACTORY_ADDRESS`. No deployment or verification link is claimed in this repository until a live run has been inspected.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## KeeperHub safety model
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Each vault receives two scheduled workflows: one calls `canOpenSettlement` before `openSettlement`; the other calls `canFinalizeSettlement` before `finalizeSettlement`. Workflows are created disabled, simulated, and enabled only after preflight succeeds.
+
+A workflow transaction is shown as verified only when all three checks agree:
+
+1. KeeperHub records a successful run and transaction hash.
+2. An independent RPC read finds a successful receipt containing the expected vault event.
+3. The vault resolves to the expected final state.
+
+Missing or contradictory evidence is classified as recovery-required and is never blindly rebroadcast.
+
+## Verification
+
+```bash
+forge test
+npm test
+npm run lint
+npx tsc --noEmit --incremental false
+npm run build
+```
+
+Live deployment, KeeperHub execution, and beneficiary-claim verification require credentials and funded test wallets. Those steps are intentionally separate from the deterministic local suite.
+
+## Security boundaries
+
+- Native test ETH only; ERC-20s and NFTs are out of scope.
+- The application server, KeeperHub, and guardian cannot redirect beneficiary assets.
+- Beneficiaries must be unique, nonzero addresses and shares must total exactly 10,000 basis points.
+- Standard vault timing is at least one day; shortened intervals are contract-supported only for explicitly labelled testnet demo vaults and are not exposed by the normal dashboard flow.
+- Deposits stop after settlement, claims are pull-based and replay-safe, and external value transfers use reentrancy protection.
+- This is unaudited hackathon software and must not be used with real assets.
+
+## Primary references
+
+- [KeeperHub workflows API](https://docs.keeperhub.com/api/workflows)
+- [KeeperHub executions API](https://docs.keeperhub.com/api/executions)
+- [KeeperHub verified transaction guidance](https://docs.keeperhub.com/guides/first-verified-transaction)
+- [AI SDK structured output](https://ai-sdk.dev/docs/ai-sdk-core/generating-structured-data)

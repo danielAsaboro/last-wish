@@ -29,7 +29,7 @@ describe("validatePolicy", () => {
   });
 
   it("rejects shares that do not total 10,000 basis points", () => {
-    const invalid = {
+    const invalid: SuccessionPolicy = {
       ...policy,
       beneficiaries: policy.beneficiaries.map((beneficiary) => ({
         ...beneficiary,
@@ -44,7 +44,7 @@ describe("validatePolicy", () => {
   });
 
   it("rejects duplicate and zero beneficiary addresses", () => {
-    const invalid = {
+    const invalid: SuccessionPolicy = {
       ...policy,
       beneficiaries: [
         { ...policy.beneficiaries[0], address: "0x0000000000000000000000000000000000000000" },

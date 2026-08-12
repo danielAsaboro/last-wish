@@ -1,69 +1,112 @@
-import Image from "next/image";
+const steps = [
+  ["01", "Create the policy", "Choose a guardian, fixed beneficiary shares, and an inactivity window. Your wallet signs the vault deployment."],
+  ["02", "Keep the heartbeat", "A small owner transaction resets the clock. Nothing depends on an email, server login, or model decision."],
+  ["03", "Review the grace period", "After inactivity, KeeperHub may open a time-locked review window. The owner can reactivate; the guardian can veto."],
+  ["04", "Settle and verify", "KeeperHub finalizes only after the contract permits it. Every beneficiary claims independently from the vault."],
+] as const;
 
 export default function Home() {
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert h-5 w-[100px]"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the{" "}
-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
-              page.tsx
-            </code>{" "}
-            file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert h-[14px] w-4"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
+    <div className="site-shell">
+      <header className="site-header wrap">
+        <a className="wordmark" href="#top" aria-label="LastWish home">
+          <span className="mark" aria-hidden="true">LW</span>
+          LastWish
+        </a>
+        <nav aria-label="Main navigation">
+          <a href="#how-it-works">How it works</a>
+          <a href="#safeguards">Safeguards</a>
+          <a className="button button-small" href="/dashboard">Open dashboard</a>
+        </nav>
+      </header>
+
+      <main id="top">
+        <section className="hero wrap">
+          <div className="hero-copy">
+            <p className="eyebrow"><span className="live-dot" /> Self-custodial succession on testnet</p>
+            <h1>Your assets should not become inaccessible when you do.</h1>
+            <p className="lede">
+              A programmable digital-asset succession vault with owner heartbeats, a guardian veto,
+              and contract-enforced beneficiary claims.
+            </p>
+            <div className="hero-actions">
+              <a className="button" href="/dashboard">Open dashboard <span aria-hidden="true">↗</span></a>
+              <a className="text-link" href="#how-it-works">Follow the lifecycle <span aria-hidden="true">↓</span></a>
+            </div>
+            <p className="microcopy">Native test ETH only · Base Sepolia preferred · No custody by LastWish</p>
+          </div>
+          <div className="hero-ledger" aria-label="Example policy lifecycle">
+            <div className="ledger-top">
+              <span>Policy 03</span><span className="status-pill">Active</span>
+            </div>
+            <div className="pulse-orbit"><span>28</span><small>days until<br />next heartbeat</small></div>
+            <div className="ledger-row"><span>Vault balance</span><strong>0.240 ETH</strong></div>
+            <div className="ledger-row"><span>Beneficiaries</span><strong>60 / 40</strong></div>
+            <div className="ledger-row"><span>Execution</span><strong>KeeperHub</strong></div>
+            <p className="ledger-note">Illustrative values—not connected wallet data.</p>
+          </div>
+        </section>
+
+        <section className="principle-band">
+          <div className="wrap band-grid">
+            <p className="eyebrow light">The governing principle</p>
+            <blockquote>Automation may execute your policy. It may never rewrite it.</blockquote>
+          </div>
+        </section>
+
+        <section className="section wrap" id="how-it-works">
+          <div className="section-heading">
+            <p className="eyebrow">A visible, reversible path</p>
+            <h2>Inactivity starts a review—not an irreversible transfer.</h2>
+          </div>
+          <div className="step-grid">
+            {steps.map(([number, title, copy]) => (
+              <article className="step-card" key={number}>
+                <span>{number}</span><h3>{title}</h3><p>{copy}</p>
+              </article>
+            ))}
+          </div>
+        </section>
+
+        <section className="section soft-section" id="safeguards">
+          <div className="wrap safeguards-grid">
+            <div className="section-heading">
+              <p className="eyebrow">Authority stays narrow</p>
+              <h2>Three safeguards. No hidden administrator.</h2>
+              <p>The owner controls the policy and active funds. The guardian can stop settlement, never redirect it. Contract rules constrain every executor.</p>
+            </div>
+            <div className="safeguard-list">
+              <article><span>01</span><div><h3>Self-custodial vault</h3><p>No application server, guardian, or KeeperHub wallet can choose a new recipient.</p></div></article>
+              <article><span>02</span><div><h3>Guardian veto, not custody</h3><p>A guardian can halt a questionable transition during grace; only the owner can reactivate.</p></div></article>
+              <article><span>03</span><div><h3>Pull-based claims</h3><p>Finalization snapshots every allocation, so one unavailable beneficiary cannot block another.</p></div></article>
+            </div>
+          </div>
+        </section>
+
+        <section className="section wrap execution-section">
+          <div>
+            <p className="eyebrow">Execution with receipts</p>
+            <h2>KeeperHub executes only what the vault permits.</h2>
+          </div>
+          <div className="evidence-card">
+            <div><span className="status-dot success" /> Simulation</div><strong>Must pass before activation</strong>
+            <div><span className="status-dot success" /> Receipt</div><strong>Must verify onchain</strong>
+            <div><span className="status-dot success" /> Independent read</div><strong>Must match expected state</strong>
+            <p>Missing or ambiguous receipts stop in recovery. LastWish never turns “unknown” into “success.”</p>
+          </div>
+        </section>
+
+        <section className="disclosure wrap">
+          <strong>Important boundary</strong>
+          <p>LastWish is not a legal will, probate service, or proof-of-death system. It executes a pre-authorized digital-asset policy based on onchain inactivity. This MVP uses testnet assets only.</p>
+        </section>
       </main>
+
+      <footer className="site-footer wrap">
+        <div className="wordmark"><span className="mark" aria-hidden="true">LW</span>LastWish</div>
+        <p>Programmable digital-asset succession.</p>
+        <a href="/dashboard">Open dashboard →</a>
+      </footer>
     </div>
   );
 }
