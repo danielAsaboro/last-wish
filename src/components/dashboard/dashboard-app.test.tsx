@@ -350,6 +350,55 @@ describe("DashboardApp async action identity", () => {
     expect(screen.queryByText("Chain history indexed through block 105")).not.toBeInTheDocument();
   });
 
+  it("refetches timestamps for canonical logs when rebuilding an ahead cache", async () => {
+    const cachedTransaction = `0x${"5".repeat(64)}` as const;
+    const canonicalTransaction = `0x${"6".repeat(64)}` as const;
+    let block104TimestampCall = 0;
+    mocks.getBlock.mockImplementation(async (input: { blockTag?: string; blockNumber?: bigint }) => {
+      if (input.blockTag === "latest") {
+        latestBlockCall += 1;
+        return latestBlockCall === 1
+          ? { number: 105n, timestamp: 1_800_000_005n }
+          : { number: 104n, timestamp: 1_800_086_400n };
+      }
+      if (input.blockNumber === 104n) {
+        block104TimestampCall += 1;
+        return {
+          number: 104n,
+          timestamp: block104TimestampCall === 1 ? 1_800_000_000n : 1_800_086_400n,
+        };
+      }
+      return { number: input.blockNumber ?? 105n, timestamp: 1_800_000_000n };
+    });
+    mocks.getContractEvents
+      .mockResolvedValueOnce([{
+        eventName: "Heartbeat",
+        blockNumber: 104n,
+        transactionHash: cachedTransaction,
+        logIndex: 0,
+        args: { owner },
+      }])
+      .mockResolvedValueOnce([{
+        eventName: "Deposit",
+        blockNumber: 104n,
+        transactionHash: canonicalTransaction,
+        logIndex: 0,
+        args: { sender: owner, amount: 1n },
+      }]);
+
+    render(<DashboardApp />);
+
+    expect(await screen.findByText("Chain history indexed through block 105")).toBeInTheDocument();
+    expect(screen.getByText("Jan 15, 2027, 8:00 AM UTC")).toBeInTheDocument();
+
+    await act(async () => { intervalCallbacks[0]?.(); });
+
+    expect(await screen.findByText("Chain history indexed through block 104")).toBeInTheDocument();
+    expect(mocks.getBlock.mock.calls.filter(([input]) => input.blockNumber === 104n)).toHaveLength(2);
+    expect(screen.getByText("Jan 16, 2027, 8:00 AM UTC")).toBeInTheDocument();
+    expect(screen.queryByText("Jan 15, 2027, 8:00 AM UTC")).not.toBeInTheDocument();
+  });
+
   it("rebuilds from the new deployment block when the verified snapshot no longer matches the cache", async () => {
     const oldTransaction = `0x${"e".repeat(64)}` as const;
     const replacementTransaction = `0x${"f".repeat(64)}` as const;

@@ -266,7 +266,9 @@ export function DashboardApp() {
       window.localStorage.setItem(`lastwish:vault:${preferredChain.id}`, requestedVault);
 
       const auditCacheKey = `${preferredChain.id}:${requestedVault.toLowerCase()}`;
+      const cachedHistory = auditHistoryCache.current.get(auditCacheKey);
       const reusableHistory = matchingAuditHistory(auditHistoryCache.current, auditCacheKey, deployedAtBlock, blockNumber);
+      const rebuildingHistory = cachedHistory !== undefined && reusableHistory === undefined;
       setAuditIndexCoverage({
         state: "indexing",
         targetBlock: blockNumber,
@@ -287,7 +289,7 @@ export function DashboardApp() {
         const candidateLogs = [...(reusableHistory?.logs ?? []), ...newLogs];
         const candidateTimestamps = new Map(blockTimestampCache.current);
         const blockNumbers = [...new Set(candidateLogs.map((log) => log.blockNumber).filter((block): block is bigint => block !== null && block !== undefined))];
-        const missingBlocks = blockNumbers.filter((blockNumber) => !blockTimestampCache.current.has(blockNumber));
+        const missingBlocks = blockNumbers.filter((blockNumber) => rebuildingHistory || !blockTimestampCache.current.has(blockNumber));
         const blocks = await Promise.all(missingBlocks.map((blockNumber) => publicClient.getBlock({ blockNumber })));
         for (const block of blocks) candidateTimestamps.set(block.number, block.timestamp);
         const candidateEvents = buildChainAuditEvents(candidateLogs, candidateTimestamps);
