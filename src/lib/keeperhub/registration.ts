@@ -106,6 +106,7 @@ export async function registerVaultWorkflowPair(
           throw error;
         }
         assertRetired(rows, enabledObsolete.map((row) => row.id));
+        assertNoEnabledObsolete(rows, input, touched);
       }
       return {
         workflows: healthy.map(({ row, definition }) => ({ workflowId: row.id, name: definition.name, simulationMode: "already_healthy" })),
@@ -236,6 +237,7 @@ export async function registerVaultWorkflowPair(
       throw error;
     }
     assertRetired(reconciled, retiredWorkflowIds);
+    assertNoEnabledObsolete(reconciled, input, touched);
     for (const candidate of candidates) {
       const matches = findWorkflowsByRegistrationKey(reconciled, candidate.definition);
       for (const duplicate of matches.filter((row) => row.id !== candidate.row.id && row.enabled === true)) {
@@ -251,6 +253,7 @@ export async function registerVaultWorkflowPair(
       pairConfirmed = false;
       throw error;
     }
+    assertNoEnabledObsolete(reconciled, input, touched);
 
     return {
       workflows: candidates.map((candidate) => ({
@@ -325,6 +328,23 @@ function assertRetired(rows: WorkflowRow[], retiredWorkflowIds: string[]): void 
     if (workflow && isLiveWorkflow(workflow) && workflow.enabled === true) {
       throw new Error(`KeeperHub did not retire obsolete workflow ${workflowId}.`);
     }
+  }
+}
+
+function assertNoEnabledObsolete(
+  rows: WorkflowRow[],
+  input: { chainId: number; vault: Address; definitions: KeeperHubWorkflowDefinition[] },
+  touched: Set<string>,
+): void {
+  const enabledObsolete = findObsoleteVaultWorkflows(
+    rows,
+    input.chainId,
+    getAddress(input.vault),
+    input.definitions,
+  ).filter((row) => row.enabled === true);
+  for (const workflow of enabledObsolete) touched.add(workflow.id);
+  if (enabledObsolete.length > 0) {
+    throw new Error("KeeperHub exposed an enabled prior-policy workflow during final reconciliation.");
   }
 }
 

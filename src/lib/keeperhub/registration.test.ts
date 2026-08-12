@@ -197,6 +197,29 @@ describe("idempotent KeeperHub workflow-pair registration", () => {
     expect(client.simulateWorkflow).not.toHaveBeenCalled();
   });
 
+  it("detects a concurrent enabled prior-policy schedule during healthy-pair cleanup", async () => {
+    const oldDefinition = buildVaultWorkflows({ chainId: 84532, vault, scheduleCron: "*/5 * * * *", policyVersion: 2n })[0];
+    let current = [row("wf_open", definitions[0], true), row("wf_finalize", definitions[1], true), row("wf_old", oldDefinition, true)];
+    const client = {
+      listWorkflows: vi.fn(async () => structuredClone(current)),
+      createWorkflow: vi.fn(),
+      updateWorkflow: vi.fn(async (id: string, patch: Record<string, unknown>) => {
+        current = current.map((workflow) => workflow.id === id ? { ...workflow, ...structuredClone(patch) } as typeof workflow : workflow);
+        if (id === "wf_old") current.push(row("wf_old_concurrent", oldDefinition, true));
+        return {};
+      }),
+      simulateWorkflow: vi.fn(),
+    };
+
+    await expect(registerVaultWorkflowPair(client, { chainId: 84532, vault, definitions, readPolicyGuard: async () => false })).rejects.toSatisfy((error) => {
+      const mutation = error as WorkflowRegistrationMutationError;
+      expect(mutation.observedWorkflows).toContainEqual(expect.objectContaining({ workflowId: "wf_old_concurrent", enabled: true }));
+      return true;
+    });
+    expect(current.find((workflow) => workflow.id === "wf_open")?.enabled).toBe(true);
+    expect(current.find((workflow) => workflow.id === "wf_finalize")?.enabled).toBe(true);
+  });
+
   it("repairs a disabled current-key duplicate whose graph drifted instead of taking the healthy shortcut", async () => {
     const drifted = row("wf_open_drifted", definitions[0]);
     drifted.nodes[3].data.config.abiFunction = "attackerChangedFunction";
@@ -355,5 +378,28 @@ describe("idempotent KeeperHub workflow-pair registration", () => {
     expect(current.find((workflow) => workflow.id === "wf_open")?.enabled).toBe(true);
     expect(current.find((workflow) => workflow.id === "wf_finalize")?.enabled).toBe(true);
     expect(current.find((workflow) => workflow.id === "wf_old")?.enabled).toBe(true);
+  });
+
+  it("detects a concurrent enabled prior-policy schedule during staged-pair retirement", async () => {
+    const oldDefinition = buildVaultWorkflows({ chainId: 84532, vault, scheduleCron: "*/5 * * * *", policyVersion: 2n })[0];
+    let current = [row("wf_old", oldDefinition, true), row("wf_open", definitions[0]), row("wf_finalize", definitions[1])];
+    const client = {
+      listWorkflows: vi.fn(async () => structuredClone(current)),
+      createWorkflow: vi.fn(),
+      updateWorkflow: vi.fn(async (id: string, patch: Record<string, unknown>) => {
+        current = current.map((workflow) => workflow.id === id ? { ...workflow, ...structuredClone(patch) } as typeof workflow : workflow);
+        if (id === "wf_old") current.push(row("wf_old_concurrent", oldDefinition, true));
+        return {};
+      }),
+      simulateWorkflow: vi.fn(async () => ({ warnings: [], simulatedNodeCount: 1, skippedNodeCount: 0 })),
+    };
+
+    await expect(registerVaultWorkflowPair(client, { chainId: 84532, vault, definitions, readPolicyGuard: async () => false })).rejects.toSatisfy((error) => {
+      const mutation = error as WorkflowRegistrationMutationError;
+      expect(mutation.observedWorkflows).toContainEqual(expect.objectContaining({ workflowId: "wf_old_concurrent", enabled: true }));
+      return true;
+    });
+    expect(current.find((workflow) => workflow.id === "wf_open")?.enabled).toBe(true);
+    expect(current.find((workflow) => workflow.id === "wf_finalize")?.enabled).toBe(true);
   });
 });
