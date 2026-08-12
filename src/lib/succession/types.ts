@@ -56,4 +56,6 @@ export type KeeperHubEvidence = {
   observedVaultStatus?: VaultStatus;
   outcome?: "TRANSACTION" | "NO_WRITE";
   timestamp?: bigint;
+  failedNode?: string;
+  failureReason?: string;
 };

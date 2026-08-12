@@ -4,6 +4,7 @@ import {
   buildExecutionKey,
   classifyKeeperHubEvidence,
   classifyWorkflowEvidence,
+  extractWorkflowFailureDiagnostic,
   inspectWorkflowExecutionLogs,
   parseEnabledChains,
   parseWorkflowExecutions,
@@ -47,6 +48,54 @@ describe("KeeperHub chain selection", () => {
 });
 
 describe("KeeperHub execution evidence", () => {
+  it("extracts a bounded, redacted failed-node diagnostic from the matching execution", () => {
+    const diagnostic = extractWorkflowFailureDiagnostic({
+      execution: { id: "exec_failed", workflowId: "wf_open", status: "error" },
+      logs: [{
+        id: "log_failed", executionId: "exec_failed", nodeId: "execute", nodeName: "Open grace", nodeType: "web3/write-contract", status: "error",
+        input: null, output: null, outputRaw: null,
+        error: `RPC timeout using Bearer secret-token and sk-${"a".repeat(40)} ${"x".repeat(300)}`,
+        duration: "1000", startedAt: "2026-08-12T12:00:00Z", completedAt: "2026-08-12T12:00:01Z",
+      }],
+    }, "exec_failed", "wf_open");
+
+    expect(diagnostic).toMatchObject({ failedNode: "Open grace" });
+    expect(diagnostic?.failureReason).toBe("RPC request timed out.");
+    expect(diagnostic?.failureReason).not.toContain("secret-token");
+    expect(diagnostic?.failureReason).not.toContain(`sk-${"a".repeat(40)}`);
+    expect(diagnostic?.failureReason.length).toBeLessThanOrEqual(240);
+    expect(extractWorkflowFailureDiagnostic({
+      execution: { id: "other", workflowId: "wf_open", status: "error" },
+      logs: [],
+    }, "exec_failed", "wf_open")).toBeUndefined();
+  });
+
+  it("never returns raw provider URLs, tokens, or unknown error text to the client", () => {
+    const diagnostic = extractWorkflowFailureDiagnostic({
+      execution: { id: "exec_failed", workflowId: "wf_open", status: "error" },
+      logs: [{
+        id: "log_failed", executionId: "exec_failed", nodeId: "execute", nodeName: "Open grace", nodeType: "web3/write-contract", status: "error",
+        input: null, output: null, outputRaw: null,
+        error: "Request failed at https://rpc.example/v2/private-key?token=secret with credential hunter2",
+        duration: "1", startedAt: "2026-08-12T12:00:00Z", completedAt: null,
+      }],
+    }, "exec_failed", "wf_open");
+    expect(diagnostic?.failureReason).toBe("RPC or network request failed.");
+    expect(JSON.stringify(diagnostic)).not.toMatch(/rpc\.example|private-key|secret|hunter2/i);
+  });
+
+  it("preserves a safe diagnostic when classifying a failed empty-hash run", () => {
+    expect(classifyWorkflowEvidence(
+      { id: "exec_failed", workflowId: "wf_open", status: "error", transactionHashes: [] },
+      "PENDING",
+      { observedVaultStatus: "ACTIVE", failedNode: "Open grace", failureReason: "RPC timeout." },
+    )).toMatchObject({
+      status: "failed",
+      failedNode: "Open grace",
+      failureReason: "RPC timeout.",
+    });
+  });
+
   it("accepts every current KeeperHub execution status and nullable completion timestamps", () => {
     const statuses = ["pending", "running", "unconfirmed", "success", "error", "cancelled", "phantom", "system_error"] as const;
     const executions = parseWorkflowExecutions(statuses.map((status) => ({

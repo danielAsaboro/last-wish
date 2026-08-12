@@ -79,6 +79,7 @@ export type WorkflowLogInspection =
   | { kind: "write"; transactionHash: Address }
   | { kind: "no_write" }
   | { kind: "unknown" };
+export type WorkflowFailureDiagnostic = { failedNode: string; failureReason: string };
 export type SettlementAction = "openSettlement" | "finalizeSettlement";
 
 export function parseEnabledChains(input: unknown): KeeperHubChain[] {
@@ -236,6 +237,26 @@ export function inspectWorkflowExecutionLogs(
   return conditionProvesFalseBranch && checkProvesFalse ? { kind: "no_write" } : { kind: "unknown" };
 }
 
+export function extractWorkflowFailureDiagnostic(
+  input: unknown,
+  expectedExecutionId: string,
+  expectedWorkflowId: string,
+): WorkflowFailureDiagnostic | undefined {
+  const parsed = workflowLogResponseSchema.safeParse(input);
+  if (!parsed.success || parsed.data.execution.id !== expectedExecutionId || parsed.data.execution.workflowId !== expectedWorkflowId) return undefined;
+  const failed = parsed.data.logs.find((log) =>
+    log.executionId === expectedExecutionId &&
+    log.status !== "success" &&
+    typeof log.error === "string" &&
+    log.error.trim().length > 0,
+  );
+  if (!failed || !failed.error) return undefined;
+  return {
+    failedNode: safeFailedNode(failed.nodeId, failed.nodeName),
+    failureReason: safeFailureReason(failed.error),
+  };
+}
+
 export function classifyWorkflowEvidence(
   input: unknown,
   expectedStatus: VaultStatus,
@@ -248,6 +269,8 @@ export function classifyWorkflowEvidence(
     observedVaultStatus?: VaultStatus;
     noWriteVerified?: boolean;
     transactionHash?: Address;
+    failedNode?: string;
+    failureReason?: string;
   },
 ): KeeperHubEvidence {
   const execution = workflowExecutionSchema.parse(input);
@@ -262,6 +285,8 @@ export function classifyWorkflowEvidence(
       verified: false,
       observedVaultStatus: "RECOVERY_REQUIRED",
       timestamp: parseTimestamp(execution.completedAt ?? execution.startedAt),
+      failedNode: reconciliation.failedNode,
+      failureReason: reconciliation.failureReason,
     };
   }
 
@@ -289,6 +314,8 @@ export function classifyWorkflowEvidence(
       observedVaultStatus: successfulCheck ? reconciliation.observedVaultStatus : "RECOVERY_REQUIRED",
       ...(successfulCheck ? { outcome: "NO_WRITE" as const } : {}),
       timestamp: parseTimestamp(execution.completedAt ?? execution.startedAt),
+      failedNode: reconciliation.failedNode,
+      failureReason: reconciliation.failureReason,
     };
   }
 
@@ -311,6 +338,8 @@ export function classifyWorkflowEvidence(
     observedVaultStatus: recoveryRequired ? "RECOVERY_REQUIRED" : reconciliation.observedVaultStatus,
     outcome: "TRANSACTION",
     timestamp: parseTimestamp(execution.completedAt ?? execution.startedAt),
+    failedNode: reconciliation.failedNode,
+    failureReason: reconciliation.failureReason,
   };
 }
 
@@ -322,6 +351,25 @@ function parseTimestamp(value?: string | null): bigint | undefined {
 
 function objectValue(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+function safeFailedNode(nodeId: string, nodeName: string): string {
+  if (nodeId === "check") return "Eligibility check";
+  if (nodeId === "eligible") return "Eligibility branch";
+  if (nodeId === "execute" && /^(Open grace|Finalize settlement)$/.test(nodeName)) return nodeName;
+  if (nodeId === "execute") return "Settlement transaction";
+  return "KeeperHub node";
+}
+
+function safeFailureReason(value: string): string {
+  const normalized = value.toLowerCase();
+  if (/timed?\s*out|timeout|etimedout|deadline exceeded/.test(normalized)) return "RPC request timed out.";
+  if (/rate.?limit|too many requests|\b429\b/.test(normalized)) return "Execution provider rate limit reached.";
+  if (/execution reverted|\brevert(?:ed)?\b/.test(normalized)) return "Contract execution reverted.";
+  if (/insufficient (?:funds|balance)/.test(normalized)) return "Execution wallet has insufficient testnet funds.";
+  if (/out of gas|intrinsic gas|gas required exceeds/.test(normalized)) return "Contract execution ran out of gas.";
+  if (/\brpc\b|network|connection|fetch failed|econn/.test(normalized)) return "RPC or network request failed.";
+  return "KeeperHub node reported an error.";
 }
 
 function transactionHashesIn(value: unknown, seen = new Set<object>()): Address[] {

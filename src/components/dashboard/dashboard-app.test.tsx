@@ -43,7 +43,7 @@ vi.mock("wagmi", () => ({
 
 vi.mock("@/lib/wallet/config", () => ({ preferredChain: { id: 84532, name: "Base Sepolia" } }));
 
-import { DashboardApp } from "./dashboard-app";
+import { DashboardApp, PolicyEditor } from "./dashboard-app";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -243,5 +243,153 @@ describe("DashboardApp async action identity", () => {
     expect(screen.getByText("Policy v2")).toBeInTheDocument();
     expect(screen.queryByText("Policy v1")).not.toBeInTheDocument();
     expect(screen.queryByText(/keeperhub automation is healthy/i)).not.toBeInTheDocument();
+  });
+});
+
+describe("PolicyEditor Copilot transparency", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("keeps the AI SDK explanation visible through the unsigned wallet review", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json({
+      available: true,
+      source: "ai",
+      draft: {
+        beneficiaries: [
+          { label: "Ada", address: vault, shareBps: 6000 },
+          { label: "Lin", address: "0x4444444444444444444444444444444444444444", shareBps: 4000 },
+        ],
+        heartbeatDays: 45,
+        graceDays: 21,
+        explanation: "A longer heartbeat reduces maintenance pressure while the three-week grace window preserves time for guardian review.",
+      },
+    })));
+
+    render(<PolicyEditor owner={owner} mode="create" pending={false} onSubmit={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText(/guardian address/i), { target: { value: otherAccount } });
+    fireEvent.change(screen.getByLabelText("Beneficiary 1 label"), { target: { value: "Ada" } });
+    fireEvent.change(screen.getByLabelText("Beneficiary 1 address"), { target: { value: vault } });
+    fireEvent.change(screen.getByLabelText("Beneficiary 2 label"), { target: { value: "Lin" } });
+    fireEvent.change(screen.getByLabelText("Beneficiary 2 address"), { target: { value: "0x4444444444444444444444444444444444444444" } });
+    fireEvent.click(screen.getByRole("button", { name: /continue/i }));
+    fireEvent.change(screen.getByLabelText(/policy copilot notes/i), { target: { value: "Prefer a conservative guardian review window." } });
+    fireEvent.click(screen.getByRole("button", { name: /draft with copilot/i }));
+
+    expect(await screen.findByText(/longer heartbeat reduces maintenance pressure/i)).toBeInTheDocument();
+    expect(screen.getByText(/AI-generated draft rationale/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /continue/i }));
+    expect(screen.getByText(/longer heartbeat reduces maintenance pressure/i)).toBeInTheDocument();
+    expect(screen.getByText(/unsigned suggestion/i)).toBeInTheDocument();
+  });
+
+  it("keeps Copilot explicitly unavailable when the AI provider is not configured", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json({ available: false, error: "Policy Copilot is unavailable because no AI provider credential is configured." }, 503)));
+    render(<PolicyEditor owner={owner} mode="create" pending={false} onSubmit={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText(/guardian address/i), { target: { value: otherAccount } });
+    for (const [label, value] of [
+      ["Beneficiary 1 label", "Ada"], ["Beneficiary 1 address", vault],
+      ["Beneficiary 2 label", "Lin"], ["Beneficiary 2 address", "0x4444444444444444444444444444444444444444"],
+    ]) fireEvent.change(screen.getByLabelText(label), { target: { value } });
+    fireEvent.click(screen.getByRole("button", { name: /continue/i }));
+    fireEvent.change(screen.getByLabelText(/policy copilot notes/i), { target: { value: "Prefer a conservative window." } });
+    fireEvent.click(screen.getByRole("button", { name: /draft with copilot/i }));
+    expect(await screen.findByRole("button", { name: /copilot unavailable/i })).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent(/no AI provider credential/i);
+  });
+
+  it("removes stale AI rationale after a reviewed parameter is edited", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json({
+      available: true,
+      source: "ai",
+      draft: {
+        beneficiaries: [
+          { label: "Ada", address: vault, shareBps: 6000 },
+          { label: "Lin", address: "0x4444444444444444444444444444444444444444", shareBps: 4000 },
+        ],
+        heartbeatDays: 45,
+        graceDays: 21,
+        explanation: "A longer heartbeat reduces maintenance pressure while preserving guardian review time.",
+      },
+    })));
+    render(<PolicyEditor owner={owner} mode="create" pending={false} onSubmit={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText(/guardian address/i), { target: { value: otherAccount } });
+    for (const [label, value] of [
+      ["Beneficiary 1 label", "Ada"], ["Beneficiary 1 address", vault],
+      ["Beneficiary 2 label", "Lin"], ["Beneficiary 2 address", "0x4444444444444444444444444444444444444444"],
+    ]) fireEvent.change(screen.getByLabelText(label), { target: { value } });
+    fireEvent.click(screen.getByRole("button", { name: /continue/i }));
+    fireEvent.change(screen.getByLabelText(/policy copilot notes/i), { target: { value: "Prefer a conservative window." } });
+    fireEvent.click(screen.getByRole("button", { name: /draft with copilot/i }));
+    expect(await screen.findByText(/longer heartbeat reduces maintenance pressure/i)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText(/heartbeat interval/i), { target: { value: "60" } });
+    expect(screen.queryByText(/longer heartbeat reduces maintenance pressure/i)).not.toBeInTheDocument();
+  });
+
+  it("removes stale AI rationale after the guardian is edited", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json({
+      available: true,
+      source: "ai",
+      draft: {
+        beneficiaries: [
+          { label: "Ada", address: vault, shareBps: 6000 },
+          { label: "Lin", address: "0x4444444444444444444444444444444444444444", shareBps: 4000 },
+        ],
+        heartbeatDays: 45,
+        graceDays: 21,
+        explanation: "A longer heartbeat reduces maintenance pressure while preserving guardian review time.",
+      },
+    })));
+    render(<PolicyEditor owner={owner} mode="create" pending={false} onSubmit={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText(/guardian address/i), { target: { value: otherAccount } });
+    for (const [label, value] of [
+      ["Beneficiary 1 label", "Ada"], ["Beneficiary 1 address", vault],
+      ["Beneficiary 2 label", "Lin"], ["Beneficiary 2 address", "0x4444444444444444444444444444444444444444"],
+    ]) fireEvent.change(screen.getByLabelText(label), { target: { value } });
+    fireEvent.click(screen.getByRole("button", { name: /continue/i }));
+    fireEvent.change(screen.getByLabelText(/policy copilot notes/i), { target: { value: "Prefer a conservative window." } });
+    fireEvent.click(screen.getByRole("button", { name: /draft with copilot/i }));
+    expect(await screen.findByText(/longer heartbeat reduces maintenance pressure/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /back/i }));
+    fireEvent.change(screen.getByLabelText(/guardian address/i), { target: { value: "0x6666666666666666666666666666666666666666" } });
+    fireEvent.click(screen.getByRole("button", { name: /continue/i }));
+    expect(screen.queryByText(/longer heartbeat reduces maintenance pressure/i)).not.toBeInTheDocument();
+  });
+
+  it("discards a late Copilot response after a policy parameter changes", async () => {
+    const copilotResponse = deferred<Response>();
+    vi.stubGlobal("fetch", vi.fn().mockReturnValue(copilotResponse.promise));
+    render(<PolicyEditor owner={owner} mode="create" pending={false} onSubmit={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText(/guardian address/i), { target: { value: otherAccount } });
+    for (const [label, value] of [
+      ["Beneficiary 1 label", "Ada"], ["Beneficiary 1 address", vault],
+      ["Beneficiary 2 label", "Lin"], ["Beneficiary 2 address", "0x4444444444444444444444444444444444444444"],
+    ]) fireEvent.change(screen.getByLabelText(label), { target: { value } });
+    fireEvent.click(screen.getByRole("button", { name: /continue/i }));
+    fireEvent.change(screen.getByLabelText(/policy copilot notes/i), { target: { value: "Prefer a conservative window." } });
+    fireEvent.click(screen.getByRole("button", { name: /draft with copilot/i }));
+    expect(screen.getByRole("button", { name: /drafting/i })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText(/heartbeat interval/i), { target: { value: "60" } });
+
+    await act(async () => {
+      copilotResponse.resolve(json({
+        available: true,
+        source: "ai",
+        draft: {
+          beneficiaries: [
+            { label: "Ada", address: vault, shareBps: 6000 },
+            { label: "Lin", address: "0x4444444444444444444444444444444444444444", shareBps: 4000 },
+          ],
+          heartbeatDays: 45,
+          graceDays: 21,
+          explanation: "This stale rationale must never overwrite the newer user edit.",
+        },
+      }));
+      await copilotResponse.promise;
+    });
+
+    expect(screen.getByLabelText(/heartbeat interval/i)).toHaveValue(60);
+    expect(screen.queryByText(/stale rationale/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /draft with copilot/i })).toBeEnabled();
   });
 });

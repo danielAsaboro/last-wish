@@ -72,7 +72,7 @@ export function buildAuditTimeline(input: {
         id: `keeperhub-${evidence.executionId}`,
         source: "keeperhub",
         title: "Execution needs reconciliation",
-        detail: `KeeperHub receipt status: ${evidence.receiptStatus ?? "not reported"}. This outcome is not safe to retry automatically.`,
+        detail: `${evidence.failureReason ? `${evidence.failedNode ?? "KeeperHub workflow"} failed: ${evidence.failureReason} ` : ""}KeeperHub receipt status: ${evidence.receiptStatus ?? "not reported"}. This outcome is not safe to retry automatically.`,
         tone: "danger",
         workflowId: evidence.workflowId,
         executionId: evidence.executionId,
@@ -102,7 +102,9 @@ export function buildAuditTimeline(input: {
       id: `keeperhub-${evidence.executionId}`,
       source: "keeperhub",
       title: evidence.status === "failed" ? "KeeperHub execution failed" : "KeeperHub execution in progress",
-      detail: `Execution status: ${evidence.status}.`,
+      detail: evidence.status === "failed" && evidence.failureReason
+        ? `${evidence.failedNode ?? "KeeperHub workflow"} failed: ${evidence.failureReason}`
+        : `Execution status: ${evidence.status}.`,
       tone: evidence.status === "failed" ? "danger" : "warning",
       workflowId: evidence.workflowId,
       executionId: evidence.executionId,

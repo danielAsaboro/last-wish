@@ -706,7 +706,7 @@ export function VaultWorkspace(props: {
         <button disabled={props.pending || !isAddress(loadAddress)}>Load vault</button>
       </form>
     </section>
-    {!props.vaultAddress && props.account && <PolicyEditor owner={props.account} mode="create" pending={props.pending} onSubmit={props.deployVault} />}
+    {!props.vaultAddress && props.account && <PolicyEditor key={props.account} owner={props.account} mode="create" pending={props.pending} onSubmit={props.deployVault} />}
     {verifiedTarget?.kind === "update-policy" && props.vault && <div className="composer" key={composerKey(verifiedTarget)}>
       <button type="button" className="close-button" onClick={props.closeComposer}>Close</button>
       <p>Transaction target <code>{verifiedTarget.target}</code></p>
@@ -774,47 +774,54 @@ export function PolicyEditor({ owner, mode, pending, initial, onSubmit }: { owne
   const [graceDays, setGraceDays] = useState(initial ? Number(initial.gracePeriod / 86_400n) : 14);
   const [notes, setNotes] = useState("");
   const [copilotState, setCopilotState] = useState<"idle" | "loading" | "unavailable" | "ready">("idle");
+  const [copilotExplanation, setCopilotExplanation] = useState("");
   const [error, setError] = useState("");
+  const copilotRequestGeneration = useRef(0);
 
   const draft = { owner, guardian, beneficiaries, heartbeatDays, graceDays, testnetDemo: false };
   function validate() { try { buildPolicyArguments(draft); setError(""); return true; } catch (caught) { setError(errorMessage(caught)); return false; } }
   async function askCopilot() {
-    setCopilotState("loading"); setError("");
+    const requestGeneration = ++copilotRequestGeneration.current;
+    setCopilotState("loading"); setCopilotExplanation(""); setError("");
     try {
       if (!beneficiaries.every((beneficiary) => isAddress(beneficiary.address) && beneficiary.label)) throw new Error("Add beneficiary names and valid addresses before asking Copilot.");
       const response = await fetch("/api/ai/policy", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ beneficiaries: beneficiaries.map(({ label, address }) => ({ label, address })), notes }) });
       const body = await response.json();
-      if (!response.ok) { setCopilotState(response.status === 503 ? "unavailable" : "idle"); throw new Error(body.error); }
-      setBeneficiaries(body.draft.beneficiaries); setHeartbeatDays(body.draft.heartbeatDays); setGraceDays(body.draft.graceDays); setCopilotState("ready");
-    } catch (caught) { setError(errorMessage(caught)); }
+      if (requestGeneration !== copilotRequestGeneration.current) return;
+      if (!response.ok) { setCopilotState(response.status === 503 ? "unavailable" : "idle"); setError(body.error); return; }
+      setBeneficiaries(body.draft.beneficiaries); setHeartbeatDays(body.draft.heartbeatDays); setGraceDays(body.draft.graceDays); setCopilotExplanation(body.draft.explanation); setCopilotState("ready");
+    } catch (caught) { if (requestGeneration === copilotRequestGeneration.current) { setCopilotState("idle"); setError(errorMessage(caught)); } }
   }
+  function invalidateCopilotDraft() { copilotRequestGeneration.current += 1; setCopilotState("idle"); setCopilotExplanation(""); }
 
   return <section className="policy-editor">
     <div className="wizard-head"><div><p className="eyebrow">{mode === "create" ? "New vault" : "New policy version"}</p><h2>{step === 1 ? "Who should the vault recognize?" : step === 2 ? "Set timing and review." : "Review the signed values."}</h2></div><span>Step {step} / 3</span></div>
     {error && <div className="notice danger" role="alert">{error}</div>}
     {step === 1 && <div className="form-stack">
-      <label>Guardian address <span>Can veto, never redirect</span><input value={guardian} onChange={(event) => setGuardian(event.target.value)} placeholder="0x…" /></label>
+      <label>Guardian address <span>Can veto, never redirect</span><input value={guardian} onChange={(event) => { invalidateCopilotDraft(); setGuardian(event.target.value); }} placeholder="0x…" /></label>
       <div className="beneficiary-editor"><div className="form-label">Beneficiaries <span>Shares must total 100%</span></div>
         {beneficiaries.map((beneficiary, index) => <div className="beneficiary-row" key={index}>
-          <input aria-label={`Beneficiary ${index + 1} label`} maxLength={60} placeholder="Name or label" value={beneficiary.label} onChange={(event) => setBeneficiaries(beneficiaries.map((item, itemIndex) => itemIndex === index ? { ...item, label: event.target.value } : item))} />
-          <input aria-label={`Beneficiary ${index + 1} address`} placeholder="0x…" value={beneficiary.address} onChange={(event) => setBeneficiaries(beneficiaries.map((item, itemIndex) => itemIndex === index ? { ...item, address: event.target.value } : item))} />
-          <label><input aria-label={`Beneficiary ${index + 1} share`} type="number" min="0.01" max="100" step="0.01" value={beneficiary.shareBps / 100} onChange={(event) => setBeneficiaries(beneficiaries.map((item, itemIndex) => itemIndex === index ? { ...item, shareBps: Math.round(Number(event.target.value) * 100) } : item))} />%</label>
-          {beneficiaries.length > 1 && <button aria-label={`Remove beneficiary ${index + 1}`} onClick={() => setBeneficiaries(beneficiaries.filter((_, itemIndex) => itemIndex !== index))}>×</button>}
+          <input aria-label={`Beneficiary ${index + 1} label`} maxLength={60} placeholder="Name or label" value={beneficiary.label} onChange={(event) => { invalidateCopilotDraft(); setBeneficiaries(beneficiaries.map((item, itemIndex) => itemIndex === index ? { ...item, label: event.target.value } : item)); }} />
+          <input aria-label={`Beneficiary ${index + 1} address`} placeholder="0x…" value={beneficiary.address} onChange={(event) => { invalidateCopilotDraft(); setBeneficiaries(beneficiaries.map((item, itemIndex) => itemIndex === index ? { ...item, address: event.target.value } : item)); }} />
+          <label><input aria-label={`Beneficiary ${index + 1} share`} type="number" min="0.01" max="100" step="0.01" value={beneficiary.shareBps / 100} onChange={(event) => { invalidateCopilotDraft(); setBeneficiaries(beneficiaries.map((item, itemIndex) => itemIndex === index ? { ...item, shareBps: Math.round(Number(event.target.value) * 100) } : item)); }} />%</label>
+          {beneficiaries.length > 1 && <button aria-label={`Remove beneficiary ${index + 1}`} onClick={() => { invalidateCopilotDraft(); setBeneficiaries(beneficiaries.filter((_, itemIndex) => itemIndex !== index)); }}>×</button>}
         </div>)}
-        <button className="add-row" disabled={beneficiaries.length >= 10} onClick={() => setBeneficiaries([...beneficiaries, { label: "", address: "", shareBps: 0 }])}>{beneficiaries.length >= 10 ? "10 beneficiary limit" : "+ Add beneficiary"}</button>
+        <button className="add-row" disabled={beneficiaries.length >= 10} onClick={() => { invalidateCopilotDraft(); setBeneficiaries([...beneficiaries, { label: "", address: "", shareBps: 0 }]); }}>{beneficiaries.length >= 10 ? "10 beneficiary limit" : "+ Add beneficiary"}</button>
       </div>
     </div>}
     {step === 2 && <div className="timing-grid">
-      <label>Heartbeat interval <input type="number" min="1" max="3650" value={heartbeatDays} onChange={(event) => setHeartbeatDays(Number(event.target.value))} /><span>days</span><small>How long before automation may open grace.</small></label>
-      <label>Guardian grace period <input type="number" min="1" max="3650" value={graceDays} onChange={(event) => setGraceDays(Number(event.target.value))} /><span>days</span><small>Time to reactivate or veto before finalization.</small></label>
+      <label>Heartbeat interval <input type="number" min="1" max="3650" value={heartbeatDays} onChange={(event) => { invalidateCopilotDraft(); setHeartbeatDays(Number(event.target.value)); }} /><span>days</span><small>How long before automation may open grace.</small></label>
+      <label>Guardian grace period <input type="number" min="1" max="3650" value={graceDays} onChange={(event) => { invalidateCopilotDraft(); setGraceDays(Number(event.target.value)); }} /><span>days</span><small>Time to reactivate or veto before finalization.</small></label>
       <div className="copilot-box"><div><p className="eyebrow">AI SDK 7 Policy Copilot</p><strong>Draft parameters, never transactions.</strong><p>Describe priorities. Supplied addresses remain fixed and every draft is validated before wallet review.</p></div>
         <textarea aria-label="Policy Copilot notes" placeholder="Example: keep a conservative review window and explain the trade-off…" value={notes} onChange={(event) => setNotes(event.target.value)} />
         <button disabled={!notes || copilotState === "loading"} onClick={() => void askCopilot()}>{copilotState === "loading" ? "Drafting…" : copilotState === "unavailable" ? "Copilot unavailable" : "Draft with Copilot"}</button>
+        {copilotExplanation && <aside className="copilot-rationale"><strong>AI-generated draft rationale</strong><p>{copilotExplanation}</p><small>Unsigned suggestion · review every value before asking your wallet to submit.</small></aside>}
       </div>
     </div>}
     {step === 3 && <div className="review-grid">
       <div><span>Guardian</span><code>{guardian}</code></div><div><span>Heartbeat</span><strong>{heartbeatDays} days</strong></div><div><span>Grace</span><strong>{graceDays} days</strong></div>
       {beneficiaries.map((beneficiary) => <div key={beneficiary.address}><span>{beneficiary.label}</span><code>{beneficiary.address}</code><strong>{beneficiary.shareBps / 100}%</strong></div>)}
+      {copilotExplanation && <div className="copilot-review"><span>AI-generated draft rationale</span><p>{copilotExplanation}</p><small>Unsigned suggestion · the contract call uses only the reviewed values above.</small></div>}
       <p>No legal determination or model decision is included. Your wallet will display a contract call containing these exact values.</p>
     </div>}
     <div className="wizard-actions">{step > 1 && <button onClick={() => setStep(step - 1)}>Back</button>}<span />{step < 3 ? <button className="button" onClick={() => { if (step === 1 && !validate()) return; setStep(step + 1); }}>Continue</button> : <button className="button" disabled={pending} onClick={() => { if (validate()) void onSubmit(draft); }}>{pending ? "Waiting for wallet…" : mode === "create" ? "Deploy vault" : "Update policy"}</button>}</div>

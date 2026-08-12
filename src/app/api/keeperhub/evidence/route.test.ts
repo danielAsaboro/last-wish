@@ -274,4 +274,36 @@ describe("POST /api/keeperhub/evidence", () => {
     expect(keeperHub.listWorkflowExecutions).toHaveBeenCalledOnce();
     expect(keeperHub.listWorkflowExecutions).toHaveBeenCalledWith("wf_tampered");
   });
+
+  it("retains redacted failed-node context when transaction reconciliation is unavailable", async () => {
+    const vault = "0x1111111111111111111111111111111111111111";
+    const hash = `0x${"a".repeat(64)}`;
+    const definition = buildVaultWorkflows({ chainId: 84532, vault, scheduleCron: "*/5 * * * *", policyVersion: 3n })[0];
+    rpc.readContract.mockResolvedValueOnce(0).mockResolvedValueOnce(3n);
+    keeperHub.listWorkflows.mockResolvedValue([{ id: "wf_open", ...definition, enabled: true, deletedAt: null, deactivatedAt: null }]);
+    keeperHub.listWorkflowExecutions.mockResolvedValue([{
+      id: "exec_failed", workflowId: "wf_open", status: "error",
+      transactionHashes: [{ hash, nodeId: "execute", nodeName: "Open grace" }],
+    }]);
+    keeperHub.getWorkflowExecutionLogs.mockResolvedValue({
+      execution: { id: "exec_failed", workflowId: "wf_open", status: "error" },
+      logs: [{
+        id: "log_failed", executionId: "exec_failed", nodeId: "execute", nodeName: "Open grace", nodeType: "web3/write-contract", status: "error",
+        input: null, output: null, outputRaw: null, error: "RPC timeout with Bearer private-token", duration: "1",
+        startedAt: "2026-08-12T12:00:00Z", completedAt: "2026-08-12T12:00:01Z",
+      }],
+    });
+    rpc.getTransactionReceipt.mockRejectedValue(new Error("receipt unavailable"));
+
+    const response = await POST(new Request("http://localhost/api/keeperhub/evidence", {
+      method: "POST", body: JSON.stringify({ chainId: 84532, vault }),
+    }));
+    await expect(response.json()).resolves.toMatchObject({
+      evidence: [expect.objectContaining({
+        executionId: "exec_failed",
+        failedNode: "Open grace",
+        failureReason: "RPC request timed out.",
+      })],
+    });
+  });
 });

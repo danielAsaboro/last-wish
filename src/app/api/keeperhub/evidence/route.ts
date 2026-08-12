@@ -3,7 +3,7 @@ import { z } from "zod";
 
 import { baseSepolia, sepolia } from "@/lib/chains";
 import { vaultAbi } from "@/lib/contracts/abi";
-import { classifyWorkflowEvidence, inspectWorkflowExecutionLogs, verifyKeeperHubWriteLog } from "@/lib/keeperhub/client";
+import { classifyWorkflowEvidence, extractWorkflowFailureDiagnostic, inspectWorkflowExecutionLogs, verifyKeeperHubWriteLog } from "@/lib/keeperhub/client";
 import { readVaultStatusAtBlock } from "@/lib/keeperhub/reconcile";
 import { keeperHubClientFromEnv } from "@/lib/keeperhub/server";
 import { buildVaultWorkflows, isLiveWorkflow, parseWorkflowRegistrationKey, workflowGraphMatchesDefinition, type WorkflowRegistrationKey } from "@/lib/keeperhub/workflow";
@@ -98,18 +98,22 @@ export async function POST(request: Request) {
         if (!transactionHash) {
           inspectedLogs = await keeperHub.getWorkflowExecutionLogs(execution.id).catch(() => undefined);
           const inspection = inspectWorkflowExecutionLogs(inspectedLogs, execution.id, workflow.id);
+          const diagnostic = extractWorkflowFailureDiagnostic(inspectedLogs, execution.id, workflow.id);
           if (inspection.kind === "write") transactionHash = inspection.transactionHash;
           else {
             evidence.push(classifyWorkflowEvidence(execution, expectedStatus, {
               observedVaultStatus,
               noWriteVerified: definitionMatches && inspection.kind === "no_write",
+              ...diagnostic,
             }));
             continue;
           }
         }
 
+        let diagnostic = extractWorkflowFailureDiagnostic(inspectedLogs, execution.id, workflow.id);
         try {
           const keeperHubLogs = inspectedLogs ?? await keeperHub.getWorkflowExecutionLogs(execution.id);
+          diagnostic = extractWorkflowFailureDiagnostic(keeperHubLogs, execution.id, workflow.id);
           const receipt = await rpc.getTransactionReceipt({ hash: transactionHash });
           const statusAtReceipt = await readVaultStatusAtBlock(rpc, vault, receipt.blockNumber);
           const expectedEvent = expectedStatus === "PENDING" ? "SettlementOpened" : "SettlementFinalized";
@@ -132,9 +136,10 @@ export async function POST(request: Request) {
             gasUsed: receipt.gasUsed,
             observedVaultStatus: statusAtReceipt,
             transactionHash,
+            ...diagnostic,
           }));
         } catch {
-          evidence.push(classifyWorkflowEvidence(execution, expectedStatus, { observedVaultStatus, transactionHash }));
+          evidence.push(classifyWorkflowEvidence(execution, expectedStatus, { observedVaultStatus, transactionHash, ...diagnostic }));
         }
       }
     }

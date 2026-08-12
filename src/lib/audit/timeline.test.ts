@@ -69,6 +69,43 @@ describe("buildAuditTimeline", () => {
     });
   });
 
+  it("includes safe failed-node context in a failed KeeperHub audit item", () => {
+    const timeline = buildAuditTimeline({
+      chainEvents: [],
+      keeperHub: [{
+        workflowId: "wf_1",
+        executionId: "exec_failed",
+        status: "failed",
+        verified: false,
+        failedNode: "Open grace",
+        failureReason: "RPC timeout after simulation.",
+      }],
+    });
+    expect(timeline[0]).toMatchObject({
+      title: "KeeperHub execution failed",
+      detail: "Open grace failed: RPC timeout after simulation.",
+      tone: "danger",
+    });
+  });
+
+  it("keeps failed-node context visible while an attempted write awaits reconciliation", () => {
+    const timeline = buildAuditTimeline({
+      chainEvents: [],
+      keeperHub: [{
+        workflowId: "wf_1",
+        executionId: "exec_ambiguous",
+        status: "unknown",
+        verified: false,
+        transactionHash: `0x${"a".repeat(64)}`,
+        observedVaultStatus: "RECOVERY_REQUIRED",
+        failedNode: "Open grace",
+        failureReason: "Receipt lookup timed out.",
+      }],
+    });
+    expect(timeline[0].detail).toContain("Open grace failed: Receipt lookup timed out.");
+    expect(timeline[0].detail).toContain("not safe to retry automatically");
+  });
+
   it("labels completed no-write runs as eligibility checks rather than transactions", () => {
     const timeline = buildAuditTimeline({
       chainEvents: [],
