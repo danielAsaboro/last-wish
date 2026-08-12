@@ -5,11 +5,12 @@ export type CurrentVaultEvidence = "unknown" | "refreshing" | "fresh" | "stale_w
 
 export function canAuthorizeKeeperHubRegistration(input: {
   activeOwner: boolean;
+  vaultSnapshotMatches: boolean;
   readiness: KeeperHubReadinessStatus;
   currentVaultEvidence: CurrentVaultEvidence;
   automation: AutomationHealth["state"];
 }): boolean {
-  return input.activeOwner && input.readiness === "ready" && input.currentVaultEvidence === "fresh" && input.automation !== "healthy";
+  return input.activeOwner && input.vaultSnapshotMatches && input.readiness === "ready" && input.currentVaultEvidence === "fresh" && input.automation !== "healthy";
 }
 
 export async function requestKeeperHubRegistrationSignature<T>(

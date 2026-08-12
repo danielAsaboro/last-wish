@@ -25,6 +25,7 @@ import { buildWorkflowAuthorizationMessage } from "@/lib/keeperhub/authorization
 import { deriveAutomationHealth, type DiscoveredWorkflowRegistration } from "@/lib/keeperhub/evidence";
 import { canAuthorizeKeeperHubRegistration, requestKeeperHubRegistrationSignature, type CurrentVaultEvidence } from "@/lib/keeperhub/registration-gate";
 import { readinessNextSteps, type KeeperHubReadiness } from "@/lib/keeperhub/readiness";
+import { shouldApplyVaultSnapshot } from "@/lib/keeperhub/vault-snapshot";
 import { buildPolicyArguments, type PolicyDraft } from "@/lib/succession/draft";
 import { labelsFromDraft, mergeBeneficiaryLabels, parseBeneficiaryLabels } from "@/lib/succession/labels";
 import { buildLifecycleSummary } from "@/lib/succession/status";
@@ -94,6 +95,8 @@ export function DashboardApp() {
   const activateVault = useCallback((address: Address) => {
     if (activeVaultRef.current?.toLowerCase() === address.toLowerCase()) return;
     activeVaultRef.current = address;
+    setVault(undefined);
+    setAuditEvents([]);
     resetAutomationEvidence();
     setVaultAddress(address);
   }, [resetAutomationEvidence]);
@@ -122,6 +125,7 @@ export function DashboardApp() {
 
   const refreshVault = useCallback(async () => {
     if (!vaultAddress || !publicClient) return;
+    const requestedVault = vaultAddress;
     try {
       const snapshotBlock = await publicClient.getBlock({ blockTag: "latest" });
       const blockNumber = snapshotBlock.number;
@@ -153,7 +157,7 @@ export function DashboardApp() {
         args: [owner],
         blockNumber,
       });
-      if (registeredVault.toLowerCase() !== vaultAddress.toLowerCase()) {
+      if (registeredVault.toLowerCase() !== requestedVault.toLowerCase()) {
         throw new Error("This address is not a vault created by the configured LastWish factory.");
       }
       const chainBeneficiaries = await Promise.all(addresses.map(async (address) => {
@@ -165,8 +169,9 @@ export function DashboardApp() {
       }));
       const labelKey = `lastwish:labels:${preferredChain.id}:${vaultAddress}`;
       const beneficiaries = mergeBeneficiaryLabels(chainBeneficiaries, parseBeneficiaryLabels(window.localStorage.getItem(labelKey)));
+      if (!shouldApplyVaultSnapshot(requestedVault, activeVaultRef.current)) return;
       setVault({
-        address: vaultAddress,
+        address: requestedVault,
         owner,
         guardian,
         policyVersion,
@@ -180,20 +185,23 @@ export function DashboardApp() {
         observedAt: snapshotBlock.timestamp,
         beneficiaries,
       });
-      window.localStorage.setItem(`lastwish:vault:${preferredChain.id}`, vaultAddress);
+      window.localStorage.setItem(`lastwish:vault:${preferredChain.id}`, requestedVault);
 
       try {
-        const logs = await publicClient.getContractEvents({ address: vaultAddress, abi: vaultAbi, fromBlock: deployedAtBlock });
+        const logs = await publicClient.getContractEvents({ address: requestedVault, abi: vaultAbi, fromBlock: deployedAtBlock });
         const blockNumbers = [...new Set(logs.map((log) => log.blockNumber).filter((block): block is bigint => block !== null))];
         const missingBlocks = blockNumbers.filter((blockNumber) => !blockTimestampCache.current.has(blockNumber));
         const blocks = await Promise.all(missingBlocks.map((blockNumber) => publicClient.getBlock({ blockNumber })));
         for (const block of blocks) blockTimestampCache.current.set(block.number, block.timestamp);
+        if (!shouldApplyVaultSnapshot(requestedVault, activeVaultRef.current)) return;
         setAuditEvents(buildChainAuditEvents(logs, blockTimestampCache.current));
       } catch (error) {
+        if (!shouldApplyVaultSnapshot(requestedVault, activeVaultRef.current)) return;
         setAuditEvents([]);
         setNotice({ tone: "warning", text: `Vault loaded, but audit indexing is temporarily unavailable: ${errorMessage(error)}` });
       }
     } catch (error) {
+      if (!shouldApplyVaultSnapshot(requestedVault, activeVaultRef.current)) return;
       setVault(undefined);
       setNotice({ tone: "danger", text: `Could not read this vault on ${preferredChain.name}: ${errorMessage(error)}` });
     }
@@ -284,13 +292,13 @@ export function DashboardApp() {
   }, [refreshEvidence, vaultAddress]);
 
   const role = useMemo<DashboardRole>(() => {
-    if (!account || !vault) return "observer";
+    if (!account || !vault || !vaultAddress || !shouldApplyVaultSnapshot(vault.address, vaultAddress)) return "observer";
     const normalized = account.toLowerCase();
     if (vault.owner.toLowerCase() === normalized) return "owner";
     if (vault.guardian.toLowerCase() === normalized) return "guardian";
     if (vault.beneficiaries.some((beneficiary) => beneficiary.address.toLowerCase() === normalized)) return "beneficiary";
     return "observer";
-  }, [account, vault]);
+  }, [account, vault, vaultAddress]);
 
   const connection = !isConnected ? "disconnected" : chainId !== preferredChain.id ? "wrong-network" : "connected";
   const auditItems = useMemo(() => buildAuditTimeline({ chainEvents: auditEvents, keeperHub: keeperEvidence }), [auditEvents, keeperEvidence]);
@@ -304,8 +312,10 @@ export function DashboardApp() {
     if (evidenceRefresh.state === "stale") return "stale_with_success";
     return "unknown";
   }, [evidenceRefresh.state, lastSuccessfulEvidenceVault, vaultAddress]);
+  const vaultSnapshotMatches = Boolean(vaultAddress && vault && shouldApplyVaultSnapshot(vault.address, vaultAddress));
   const canRegisterAutomation = canAuthorizeKeeperHubRegistration({
     activeOwner: role === "owner",
+    vaultSnapshotMatches,
     readiness: readiness.status,
     currentVaultEvidence,
     automation: automationHealth.state,
@@ -397,9 +407,10 @@ export function DashboardApp() {
   }
 
   async function registerKeeperHub() {
-    if (!vaultAddress || !vault || !walletClient || !account || vault.owner.toLowerCase() !== account.toLowerCase()) return;
+    if (!vaultAddress || !vault || !walletClient || !account || !vaultSnapshotMatches || vault.owner.toLowerCase() !== account.toLowerCase()) return;
     if (!canAuthorizeKeeperHubRegistration({
       activeOwner: true,
+      vaultSnapshotMatches,
       readiness: readiness.status,
       currentVaultEvidence,
       automation: automationHealth.state,
@@ -419,6 +430,7 @@ export function DashboardApp() {
       setTransactionProgress({ label: "Authorize KeeperHub setup", stage: "AWAITING_SIGNATURE" });
       const signature = await requestKeeperHubRegistrationSignature({
         activeOwner: true,
+        vaultSnapshotMatches,
         readiness: readiness.status,
         currentVaultEvidence,
         automation: automationHealth.state,

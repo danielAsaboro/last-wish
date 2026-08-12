@@ -5,6 +5,7 @@ import { canAuthorizeKeeperHubRegistration, requestKeeperHubRegistrationSignatur
 describe("KeeperHub registration authorization gate", () => {
   const base = {
     activeOwner: true,
+    vaultSnapshotMatches: true,
     readiness: "ready" as const,
     currentVaultEvidence: "fresh" as const,
     automation: "recovery_required" as const,
@@ -23,6 +24,7 @@ describe("KeeperHub registration authorization gate", () => {
       { ...base, currentVaultEvidence: "refreshing" as const },
       { ...base, automation: "healthy" as const },
       { ...base, activeOwner: false },
+      { ...base, vaultSnapshotMatches: false },
     ]) {
       await expect(requestKeeperHubRegistrationSignature(input, signMessage)).resolves.toBeUndefined();
     }
@@ -35,6 +37,7 @@ describe("KeeperHub registration authorization gate", () => {
   it("permits repair authorization only for the active owner after fresh current-vault evidence confirms nonhealthy automation", () => {
     expect(canAuthorizeKeeperHubRegistration(base)).toBe(true);
     expect(canAuthorizeKeeperHubRegistration({ ...base, activeOwner: false })).toBe(false);
+    expect(canAuthorizeKeeperHubRegistration({ ...base, vaultSnapshotMatches: false })).toBe(false);
     expect(canAuthorizeKeeperHubRegistration({ ...base, readiness: "preflight_unavailable" })).toBe(false);
     expect(canAuthorizeKeeperHubRegistration({ ...base, currentVaultEvidence: "stale_with_success" })).toBe(false);
   });
