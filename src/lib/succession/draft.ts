@@ -38,6 +38,9 @@ export function buildPolicyArguments(draft: PolicyDraft) {
   if (!Number.isInteger(draft.heartbeatDays) || draft.heartbeatDays < 1 || !Number.isInteger(draft.graceDays) || draft.graceDays < 1) {
     throw new Error("Heartbeat and grace periods must each be at least one day in the dashboard.");
   }
+  if (draft.heartbeatDays > 3_650 || draft.graceDays > 3_650) {
+    throw new Error("Heartbeat and grace periods cannot exceed 10 years.");
+  }
 
   return {
     guardian: getAddress(draft.guardian) as Address,

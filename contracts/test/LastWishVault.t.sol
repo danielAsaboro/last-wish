@@ -42,6 +42,10 @@ contract LastWishVaultTest is Test {
 
         vm.expectRevert(LastWishVault.UnsafeTiming.selector);
         new LastWishVault(owner, guardian, duplicate, shares, 59, 1 hours, true);
+
+        shares[1] = 5_000;
+        vm.expectRevert(LastWishVault.UnsafeTiming.selector);
+        new LastWishVault(owner, guardian, duplicate, shares, 10 * 365 days + 1, 1 hours, true);
     }
 
     function testRecordsItsDeploymentBlockForBoundedAuditIndexing() public view {

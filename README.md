@@ -54,6 +54,8 @@ npm run dev
 
 Open `http://localhost:3000`. Configure `.env.local` with the selected testnet RPC URLs, the deployed factory address, and optional server credentials. Base Sepolia (`84532`) is the default; use Sepolia (`11155111`) only when KeeperHub chain preflight requires it.
 
+Policy Copilot supports either a dedicated `OPENAI_API_KEY` with `OPENAI_MODEL`, or AI SDK 7's gateway via `AI_GATEWAY_API_KEY` with a provider-qualified `AI_GATEWAY_MODEL` such as `openai/gpt-5-mini`. Without either credential, the UI explicitly reports Copilot as unavailable.
+
 ## Contract deployment
 
 ```bash

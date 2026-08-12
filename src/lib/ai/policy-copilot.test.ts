@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { assertCopilotPreservesBeneficiaries, copilotInputSchema, copilotOutputSchema, isCopilotConfigured } from "./policy-copilot";
+import { assertCopilotPreservesBeneficiaries, copilotInputSchema, copilotOutputSchema, copilotProviderConfiguration, isCopilotConfigured } from "./policy-copilot";
 
 describe("Policy Copilot schemas", () => {
   it("rejects requests that ask the model to decide eligibility or submit transactions", () => {
@@ -31,6 +31,12 @@ describe("Policy Copilot schemas", () => {
 
   it("reports unavailable without an AI credential", () => {
     expect(isCopilotConfigured({})).toBe(false);
+  });
+
+  it("selects a provider-compatible model for OpenAI and AI Gateway credentials", () => {
+    expect(copilotProviderConfiguration({ OPENAI_API_KEY: "secret", OPENAI_MODEL: "gpt-5-mini" })).toEqual({ kind: "openai", modelId: "gpt-5-mini" });
+    expect(copilotProviderConfiguration({ AI_GATEWAY_API_KEY: "secret" })).toEqual({ kind: "gateway", modelId: "openai/gpt-5-mini" });
+    expect(copilotProviderConfiguration({ AI_GATEWAY_API_KEY: "secret", AI_GATEWAY_MODEL: "anthropic/claude-sonnet-4.5" })).toEqual({ kind: "gateway", modelId: "anthropic/claude-sonnet-4.5" });
   });
 
   it("rejects drafts that add, remove, or relabel supplied beneficiaries", () => {

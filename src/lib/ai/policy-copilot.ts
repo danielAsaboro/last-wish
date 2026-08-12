@@ -1,5 +1,5 @@
 import { openai } from "@ai-sdk/openai";
-import { generateText, Output } from "ai";
+import { gateway, generateText, Output } from "ai";
 import { z } from "zod";
 
 const addressSchema = z.string().regex(/^0x[a-fA-F0-9]{40}$/);
@@ -44,8 +44,14 @@ export const copilotOutputSchema = z
 export type CopilotInput = z.infer<typeof copilotInputSchema>;
 export type CopilotDraft = z.infer<typeof copilotOutputSchema>;
 
+export function copilotProviderConfiguration(env: Record<string, string | undefined> = process.env): { kind: "openai" | "gateway"; modelId: string } | undefined {
+  if (env.OPENAI_API_KEY) return { kind: "openai", modelId: env.OPENAI_MODEL ?? "gpt-5-mini" };
+  if (env.AI_GATEWAY_API_KEY) return { kind: "gateway", modelId: env.AI_GATEWAY_MODEL ?? "openai/gpt-5-mini" };
+  return undefined;
+}
+
 export function isCopilotConfigured(env: Record<string, string | undefined> = process.env): boolean {
-  return Boolean(env.OPENAI_API_KEY || env.AI_GATEWAY_API_KEY);
+  return copilotProviderConfiguration(env) !== undefined;
 }
 
 export function assertCopilotPreservesBeneficiaries(input: CopilotInput, draft: CopilotDraft): void {
@@ -60,10 +66,11 @@ export function assertCopilotPreservesBeneficiaries(input: CopilotInput, draft: 
 }
 
 export async function draftPolicyWithAi(input: unknown): Promise<CopilotDraft> {
-  if (!isCopilotConfigured()) throw new Error("Policy Copilot is unavailable because no AI provider credential is configured.");
+  const provider = copilotProviderConfiguration();
+  if (!provider) throw new Error("Policy Copilot is unavailable because no AI provider credential is configured.");
   const parsed = copilotInputSchema.parse(input);
   const { output } = await generateText({
-    model: openai(process.env.OPENAI_MODEL ?? "gpt-5-mini"),
+    model: provider.kind === "openai" ? openai(provider.modelId) : gateway(provider.modelId),
     output: Output.object({ schema: copilotOutputSchema }),
     system:
       "You draft unsigned digital-asset succession policy parameters. Never decide settlement eligibility, initiate transactions, provide legal advice, or alter supplied addresses. Shares must total exactly 10,000 basis points.",

@@ -66,4 +66,15 @@ describe("buildPolicyArguments", () => {
       })),
     })).toThrow(/at most 10 beneficiaries/i);
   });
+
+  it("rejects timing that exceeds the contract safety horizon", () => {
+    expect(() => buildPolicyArguments({
+      owner,
+      guardian: "0x2222222222222222222222222222222222222222",
+      beneficiaries: [{ label: "Ada", address: "0x3333333333333333333333333333333333333333", shareBps: 10000 }],
+      heartbeatDays: 3651,
+      graceDays: 14,
+      testnetDemo: false,
+    })).toThrow(/10 years/i);
+  });
 });

@@ -481,8 +481,8 @@ export function PolicyEditor({ owner, mode, pending, initial, onSubmit }: { owne
       </div>
     </div>}
     {step === 2 && <div className="timing-grid">
-      <label>Heartbeat interval <input type="number" min="1" value={heartbeatDays} onChange={(event) => setHeartbeatDays(Number(event.target.value))} /><span>days</span><small>How long before automation may open grace.</small></label>
-      <label>Guardian grace period <input type="number" min="1" value={graceDays} onChange={(event) => setGraceDays(Number(event.target.value))} /><span>days</span><small>Time to reactivate or veto before finalization.</small></label>
+      <label>Heartbeat interval <input type="number" min="1" max="3650" value={heartbeatDays} onChange={(event) => setHeartbeatDays(Number(event.target.value))} /><span>days</span><small>How long before automation may open grace.</small></label>
+      <label>Guardian grace period <input type="number" min="1" max="3650" value={graceDays} onChange={(event) => setGraceDays(Number(event.target.value))} /><span>days</span><small>Time to reactivate or veto before finalization.</small></label>
       <div className="copilot-box"><div><p className="eyebrow">AI SDK 7 Policy Copilot</p><strong>Draft parameters, never transactions.</strong><p>Describe priorities. Supplied addresses remain fixed and every draft is validated before wallet review.</p></div>
         <textarea aria-label="Policy Copilot notes" placeholder="Example: keep a conservative review window and explain the trade-off…" value={notes} onChange={(event) => setNotes(event.target.value)} />
         <button disabled={!notes || copilotState === "loading"} onClick={() => void askCopilot()}>{copilotState === "loading" ? "Drafting…" : copilotState === "unavailable" ? "Copilot unavailable" : "Draft with Copilot"}</button>

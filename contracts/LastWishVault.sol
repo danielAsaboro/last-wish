@@ -16,6 +16,7 @@ contract LastWishVault is ReentrancyGuard {
     uint256 public constant MAX_BENEFICIARIES = 10;
     uint256 public constant MIN_DEMO_TIMING = 60;
     uint256 public constant MIN_STANDARD_TIMING = 1 days;
+    uint256 public constant MAX_POLICY_TIMING = 10 * 365 days;
 
     address public immutable owner;
     bool public immutable testnetDemo;
@@ -238,7 +239,10 @@ contract LastWishVault is ReentrancyGuard {
         uint256 length = beneficiaries_.length;
         if (length == 0 || length > MAX_BENEFICIARIES || length != shares_.length) revert InvalidBeneficiaryCount();
         uint256 minimum = testnetDemo ? MIN_DEMO_TIMING : MIN_STANDARD_TIMING;
-        if (heartbeatInterval_ < minimum || gracePeriod_ < minimum) revert UnsafeTiming();
+        if (
+            heartbeatInterval_ < minimum || gracePeriod_ < minimum || heartbeatInterval_ > MAX_POLICY_TIMING
+                || gracePeriod_ > MAX_POLICY_TIMING
+        ) revert UnsafeTiming();
 
         uint256 total;
         for (uint256 i; i < length; ++i) {
