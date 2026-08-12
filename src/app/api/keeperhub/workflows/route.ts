@@ -1,17 +1,19 @@
 import { z } from "zod";
-import { createPublicClient, getAddress, http, verifyMessage, type Address } from "viem";
+import { createPublicClient, getAddress, http, verifyMessage } from "viem";
 
 import { baseSepolia, sepolia } from "@/lib/chains";
 import { factoryAbi, vaultAbi } from "@/lib/contracts/abi";
 import { buildWorkflowAuthorizationMessage, validateWorkflowAuthorizationWindow, withWorkflowRegistrationLock } from "@/lib/keeperhub/authorization";
 import { selectRequestedExecutionChain } from "@/lib/keeperhub/client";
+import { registerVaultWorkflowPair, WorkflowRegistrationMutationError } from "@/lib/keeperhub/registration";
 import { keeperHubClientFromEnv } from "@/lib/keeperhub/server";
-import { buildVaultWorkflows, findObsoleteVaultWorkflows, findWorkflowByRegistrationKey, findWorkflowsByRegistrationKey, selectCanonicalWorkflow } from "@/lib/keeperhub/workflow";
+import { buildVaultWorkflows, parseWorkflowRegistrationKey } from "@/lib/keeperhub/workflow";
 
+const scheduleCron = "*/5 * * * *";
 const requestSchema = z.object({
   chainId: z.union([z.literal(84532), z.literal(11155111)]),
   vault: z.string().regex(/^0x[a-fA-F0-9]{40}$/),
-  scheduleCron: z.string().trim().min(9).max(100).default("*/5 * * * *"),
+  scheduleCron: z.literal(scheduleCron),
   policyVersion: z.coerce.bigint().positive(),
   expiresAt: z.number().int().positive(),
   signer: z.string().regex(/^0x[a-fA-F0-9]{40}$/),
@@ -20,17 +22,9 @@ const requestSchema = z.object({
 
 export async function POST(request: Request) {
   const parsed = requestSchema.safeParse(await request.json().catch(() => null));
-  if (!parsed.success) {
-    return Response.json({ error: "Invalid KeeperHub workflow request", issues: parsed.error.issues }, { status: 400 });
-  }
+  if (!parsed.success) return Response.json({ error: "Invalid KeeperHub workflow request", issues: parsed.error.issues }, { status: 400 });
   if (!process.env.KEEPERHUB_API_KEY) {
-    return Response.json(
-      {
-        configured: false,
-        error: "KeeperHub automation is unavailable because KEEPERHUB_API_KEY is not configured.",
-      },
-      { status: 503 },
-    );
+    return Response.json({ configured: false, error: "KeeperHub automation is unavailable because KEEPERHUB_API_KEY is not configured." }, { status: 503 });
   }
   const configuredFactory = process.env.NEXT_PUBLIC_LASTWISH_FACTORY_ADDRESS;
   if (!configuredFactory || !/^0x[a-fA-F0-9]{40}$/.test(configuredFactory)) {
@@ -38,8 +32,6 @@ export async function POST(request: Request) {
   }
 
   const client = keeperHubClientFromEnv();
-  const registered: Array<{ workflowId: string; name: string; simulation: unknown }> = [];
-  const retiredWorkflowIds: string[] = [];
   try {
     const chain = parsed.data.chainId === baseSepolia.id ? baseSepolia : sepolia;
     const rpcUrl = parsed.data.chainId === baseSepolia.id ? process.env.BASE_SEPOLIA_RPC_URL : process.env.SEPOLIA_RPC_URL;
@@ -77,71 +69,40 @@ export async function POST(request: Request) {
       return Response.json({ error: "The requested wallet chain is not an enabled supported KeeperHub testnet." }, { status: 409 });
     }
 
-    const definitions = buildVaultWorkflows({ ...parsed.data, vault: parsed.data.vault as Address });
+    const definitions = buildVaultWorkflows({ ...parsed.data, vault });
     const lockKey = `${parsed.data.chainId}:${vault.toLowerCase()}:${policyVersion}`;
-    await withWorkflowRegistrationLock(lockKey, async () => {
-      const existingWorkflows = await client.listWorkflows();
-      for (const obsolete of findObsoleteVaultWorkflows(existingWorkflows, parsed.data.chainId, vault, definitions)) {
-        await client.updateWorkflow(obsolete.id, { enabled: false });
-        retiredWorkflowIds.push(obsolete.id);
-      }
-      for (const definition of definitions) {
-        const existing = findWorkflowByRegistrationKey(existingWorkflows, definition);
-        const candidateId = existing?.id ?? getWorkflowId(await client.createWorkflow({ ...definition, enabled: false }));
-        if (existing) await client.updateWorkflow(candidateId, { ...definition, enabled: false });
-
-        const copies = findWorkflowsByRegistrationKey(await client.listWorkflows(), definition);
-        const canonical = selectCanonicalWorkflow(copies) ?? { id: candidateId };
-        for (const copy of copies) await client.updateWorkflow(copy.id, { enabled: false });
-        await client.updateWorkflow(canonical.id, { ...definition, enabled: false });
-        const simulation = await client.simulateWorkflow(canonical.id);
-        let finalSimulation = simulation;
-        if (simulationIndicatesFailure(simulation)) {
-          throw new Error(`KeeperHub preflight rejected ${definition.name}; every matching workflow remains disabled.`);
-        }
-        await client.updateWorkflow(canonical.id, { enabled: true });
-
-        const reconciledCopies = findWorkflowsByRegistrationKey(await client.listWorkflows(), definition);
-        const reconciledCanonical = selectCanonicalWorkflow(reconciledCopies) ?? canonical;
-        for (const duplicate of reconciledCopies) {
-          if (duplicate.id !== reconciledCanonical.id) await client.updateWorkflow(duplicate.id, { enabled: false });
-        }
-        if (reconciledCanonical.id !== canonical.id) {
-          await client.updateWorkflow(canonical.id, { enabled: false });
-          await client.updateWorkflow(reconciledCanonical.id, { ...definition, enabled: false });
-          const reconciledSimulation = await client.simulateWorkflow(reconciledCanonical.id);
-          if (simulationIndicatesFailure(reconciledSimulation)) {
-            throw new Error(`KeeperHub preflight rejected ${definition.name}; every matching workflow remains disabled.`);
-          }
-          await client.updateWorkflow(reconciledCanonical.id, { enabled: true });
-          finalSimulation = reconciledSimulation;
-        }
-        registered.push({ workflowId: reconciledCanonical.id, name: definition.name, simulation: finalSimulation });
-      }
-    });
-    return Response.json({ configured: true, chain: selected, workflows: registered, retiredWorkflowIds }, { status: 201 });
-  } catch (error) {
-    return Response.json(
-      {
-        configured: true,
-        error: error instanceof Error ? error.message : "KeeperHub workflow registration failed",
-        registered,
-        retiredWorkflowIds,
-        recoveryRequired: registered.length > 0,
+    const result = await withWorkflowRegistrationLock(lockKey, () => registerVaultWorkflowPair(client, {
+      chainId: parsed.data.chainId,
+      vault,
+      definitions,
+      readPolicyGuard: async (definition) => {
+        const registration = parseWorkflowRegistrationKey(definition.description);
+        if (!registration) throw new Error("LastWish could not resolve the canonical workflow registration key.");
+        return rpc.readContract({
+          address: vault,
+          abi: vaultAbi,
+          functionName: registration.action === "open" ? "canOpenSettlementForPolicy" : "canFinalizeSettlementForPolicy",
+          args: [policyVersion],
+        });
       },
-      { status: 502 },
-    );
+    }));
+    return Response.json({ configured: true, chain: selected, ...result }, { status: 201 });
+  } catch (error) {
+    if (error instanceof WorkflowRegistrationMutationError) {
+      return Response.json({
+        configured: true,
+        error: error.message,
+        recoveryRequired: error.recoveryRequired,
+        mutationJournal: error.journal,
+        observedWorkflows: error.observedWorkflows,
+      }, { status: 502 });
+    }
+    return Response.json({
+      configured: true,
+      error: error instanceof Error ? error.message : "KeeperHub workflow registration failed",
+      recoveryRequired: false,
+      mutationJournal: [],
+      observedWorkflows: [],
+    }, { status: 502 });
   }
-}
-
-function getWorkflowId(response: Record<string, unknown>): string {
-  const candidate = response.workflowId ?? response.id;
-  if (typeof candidate !== "string" || candidate.length === 0) {
-    throw new Error("KeeperHub created a workflow without returning its identifier.");
-  }
-  return candidate;
-}
-
-function simulationIndicatesFailure(simulation: Record<string, unknown>): boolean {
-  return simulation.success === false || simulation.wouldRevert === true || simulation.status === "failed";
 }

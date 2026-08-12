@@ -3,10 +3,10 @@ import { z } from "zod";
 
 import { baseSepolia, sepolia } from "@/lib/chains";
 import { vaultAbi } from "@/lib/contracts/abi";
-import { classifyWorkflowEvidence, verifyKeeperHubWriteLog } from "@/lib/keeperhub/client";
+import { classifyWorkflowEvidence, inspectWorkflowExecutionLogs, verifyKeeperHubWriteLog } from "@/lib/keeperhub/client";
 import { readVaultStatusAtBlock } from "@/lib/keeperhub/reconcile";
 import { keeperHubClientFromEnv } from "@/lib/keeperhub/server";
-import { parseWorkflowRegistrationKey, type WorkflowRegistrationKey } from "@/lib/keeperhub/workflow";
+import { buildVaultWorkflows, isLiveWorkflow, parseWorkflowRegistrationKey, workflowGraphMatchesDefinition, type WorkflowRegistrationKey } from "@/lib/keeperhub/workflow";
 import type { KeeperHubEvidence, VaultStatus } from "@/lib/succession/types";
 
 const requestSchema = z.object({
@@ -45,9 +45,11 @@ export async function POST(request: Request) {
     const observedVaultStatus = statusNames[Number(statusCode)] ?? "RECOVERY_REQUIRED";
     const evidence: KeeperHubEvidence[] = [];
     const workflows = await keeperHub.listWorkflows();
+    const definitions = buildVaultWorkflows({ chainId: parsed.data.chainId, vault, scheduleCron: "*/5 * * * *", policyVersion });
+    const definitionByAction = new Map(definitions.map((definition) => [parseWorkflowRegistrationKey(definition.description)!.action, definition]));
     const discovered = workflows.flatMap((workflow) => {
       const registration = parseWorkflowRegistrationKey(workflow.description);
-      if (!registration || registration.chainId !== parsed.data.chainId || registration.vault.toLowerCase() !== vault.toLowerCase()) return [];
+      if (!isLiveWorkflow(workflow) || !registration || registration.chainId !== parsed.data.chainId || registration.vault.toLowerCase() !== vault.toLowerCase()) return [];
       return [{ workflow, registration }];
     });
     const workflowMetadata: Array<{
@@ -57,6 +59,7 @@ export async function POST(request: Request) {
       action: WorkflowRegistrationKey["action"];
       registrationState: "current" | "stale";
       enabled?: boolean;
+      definitionMatches: boolean;
       coverage: {
         runsReturned: number;
         providerWindow: "latest_50_non_purged";
@@ -67,6 +70,8 @@ export async function POST(request: Request) {
 
     for (const { workflow, registration } of discovered) {
       const expectedStatus: VaultStatus = registration.action === "open" ? "PENDING" : "SETTLED";
+      const expectedDefinition = definitionByAction.get(registration.action)!;
+      const definitionMatches = registration.policyVersion === policyVersion && workflowGraphMatchesDefinition(workflow, expectedDefinition);
       const executions = await keeperHub.listWorkflowExecutions(workflow.id);
       workflowMetadata.push({
         workflowId: workflow.id,
@@ -75,6 +80,7 @@ export async function POST(request: Request) {
         action: registration.action,
         registrationState: registration.policyVersion === policyVersion ? "current" : "stale",
         ...(workflow.enabled === undefined ? {} : { enabled: workflow.enabled }),
+        definitionMatches,
         coverage: {
           runsReturned: executions.length,
           providerWindow: "latest_50_non_purged",
@@ -83,14 +89,27 @@ export async function POST(request: Request) {
         },
       });
       for (const execution of executions) {
-        const transactionHash = execution.transactionHashes.at(-1)?.hash as Address | undefined;
-        if (!transactionHash) {
+        if (execution.transactionHashes.length > 1) {
           evidence.push(classifyWorkflowEvidence(execution, expectedStatus, { observedVaultStatus }));
           continue;
         }
+        let inspectedLogs: unknown;
+        let transactionHash = execution.transactionHashes[0]?.hash as Address | undefined;
+        if (!transactionHash) {
+          inspectedLogs = await keeperHub.getWorkflowExecutionLogs(execution.id).catch(() => undefined);
+          const inspection = inspectWorkflowExecutionLogs(inspectedLogs, execution.id, workflow.id);
+          if (inspection.kind === "write") transactionHash = inspection.transactionHash;
+          else {
+            evidence.push(classifyWorkflowEvidence(execution, expectedStatus, {
+              observedVaultStatus,
+              noWriteVerified: definitionMatches && inspection.kind === "no_write",
+            }));
+            continue;
+          }
+        }
 
         try {
-          const keeperHubLogs = await keeperHub.getWorkflowExecutionLogs(execution.id);
+          const keeperHubLogs = inspectedLogs ?? await keeperHub.getWorkflowExecutionLogs(execution.id);
           const receipt = await rpc.getTransactionReceipt({ hash: transactionHash });
           const statusAtReceipt = await readVaultStatusAtBlock(rpc, vault, receipt.blockNumber);
           const expectedEvent = expectedStatus === "PENDING" ? "SettlementOpened" : "SettlementFinalized";
@@ -112,9 +131,10 @@ export async function POST(request: Request) {
             blockNumber: receipt.blockNumber,
             gasUsed: receipt.gasUsed,
             observedVaultStatus: statusAtReceipt,
+            transactionHash,
           }));
         } catch {
-          evidence.push(classifyWorkflowEvidence(execution, expectedStatus, { observedVaultStatus }));
+          evidence.push(classifyWorkflowEvidence(execution, expectedStatus, { observedVaultStatus, transactionHash }));
         }
       }
     }
@@ -123,6 +143,7 @@ export async function POST(request: Request) {
       configured: true,
       chainId: parsed.data.chainId,
       vault,
+      policyVersion: policyVersion.toString(),
       workflows: workflowMetadata,
       executionEvidenceScope: "recent_keeperhub_window_only",
       evidence: evidence.map((item) => ({

@@ -9,7 +9,7 @@ import type { Address, VaultStatus } from "@/lib/succession/types";
 
 export type DashboardRole = "owner" | "guardian" | "beneficiary" | "observer";
 export type DashboardAction = "heartbeat" | "update-policy" | "withdraw" | "veto" | "claim" | "fund" | "register";
-export type WalletTransactionProgress = { label: string; stage: "AWAITING_SIGNATURE" | "CONFIRMING"; transactionHash?: Address };
+export type WalletTransactionProgress = { label: string; stage: "AWAITING_SIGNATURE" | "CONFIRMING"; target?: Address; transactionHash?: Address };
 
 export type DashboardViewProps = {
   connection: "disconnected" | "wrong-network" | "connected";
@@ -18,6 +18,8 @@ export type DashboardViewProps = {
   role: DashboardRole;
   status: VaultStatus;
   vaultAddress?: string;
+  vaultResolution?: "empty" | "loading" | "ready" | "invalid" | "unavailable";
+  vaultResolutionDetail?: string;
   balanceLabel: string;
   policyVersion: string;
   canRegisterAutomation: boolean;
@@ -75,6 +77,8 @@ export function DashboardView(props: DashboardViewProps) {
     );
   }
 
+  const vaultResolution = props.vaultResolution ?? (props.vaultAddress ? "ready" : "empty");
+
   return (
     <DashboardFrame>
       <header className="dashboard-titlebar">
@@ -86,7 +90,21 @@ export function DashboardView(props: DashboardViewProps) {
       {props.transactionProgress && <TransactionProgress progress={props.transactionProgress} chainName={props.chainName} />}
       {props.children}
 
-      {props.vaultAddress ? (
+      {vaultResolution === "loading" && props.vaultAddress ? <VaultResolutionState
+        title="Verifying vault provenance"
+        detail={`Reading the contract and configured LastWish factory on ${props.chainName}. No transaction is available until verification succeeds.`}
+        address={props.vaultAddress}
+      /> : vaultResolution === "invalid" && props.vaultAddress ? <VaultResolutionState
+        title="Vault could not be verified"
+        detail="This address is not a factory-proven LastWish vault. No vault transaction is available."
+        address={props.vaultAddress}
+        error={props.vaultResolutionDetail}
+      /> : vaultResolution === "unavailable" && props.vaultAddress ? <VaultResolutionState
+        title="Vault verification is unavailable"
+        detail="The selected address could not be verified against the chain and configured factory. Retry when chain access is restored."
+        address={props.vaultAddress}
+        error={props.vaultResolutionDetail}
+      /> : vaultResolution === "ready" && props.vaultAddress ? (
         <>
           <section className="vault-overview">
             <div className="vault-state-card">
@@ -221,10 +239,20 @@ function TransactionProgress({ progress, chainName }: { progress: WalletTransact
   const confirming = progress.stage === "CONFIRMING";
   return <div className="transaction-progress" role="status" aria-live="polite">
     <span className="transaction-spinner" aria-hidden="true" />
-    <div><strong>{confirming ? "Waiting for onchain confirmation" : `Confirm ${progress.label.toLowerCase()} in your wallet`}</strong><p>{confirming ? "The wallet submitted the transaction. Actions stay locked until the receipt is final." : "Review the network, contract, and values before signing. Rejecting the request leaves the vault unchanged."}</p></div>
+    <div><strong>{confirming ? "Waiting for onchain confirmation" : `Confirm ${progress.label.toLowerCase()} in your wallet`}</strong><p>{confirming ? "The wallet submitted the transaction. Actions stay locked until the receipt is final." : "Review the network, contract, and values before signing. Rejecting the request leaves the vault unchanged."}</p>{progress.target && <p>Transaction target <code>{progress.target}</code></p>}</div>
     <ol aria-label="Transaction stages"><li className="active">1 · Wallet approval</li><li className={confirming ? "active" : ""}>2 · Onchain confirmation</li><li>3 · State refresh</li></ol>
     {progress.transactionHash && <a href={`${explorerBase(chainName)}/tx/${progress.transactionHash}`} target="_blank" rel="noreferrer">Track pending transaction ↗</a>}
   </div>;
+}
+
+function VaultResolutionState({ title, detail, address, error }: { title: string; detail: string; address: string; error?: string }) {
+  return <section className="empty-vault">
+    <p className="eyebrow">Vault verification</p>
+    <h2>{title}</h2>
+    <p>{detail}</p>
+    <code>{address}</code>
+    {error && <p>{error}</p>}
+  </section>;
 }
 
 function DashboardFrame({ children }: { children: React.ReactNode }) {

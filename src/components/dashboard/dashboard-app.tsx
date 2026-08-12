@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   formatEther,
   getAddress,
@@ -21,9 +21,11 @@ import {
 import { buildChainAuditEvents } from "@/lib/audit/chain-events";
 import { buildAuditTimeline, type ChainAuditEvent } from "@/lib/audit/timeline";
 import { factoryAbi, vaultAbi } from "@/lib/contracts/abi";
+import { AbortableRequestGeneration, isVerifiedVaultActionTarget, shouldApplyEvidenceResponse, shouldApplyVaultBlock } from "@/lib/dashboard/async-guards";
 import { buildWorkflowAuthorizationMessage } from "@/lib/keeperhub/authorization";
 import { deriveAutomationHealth, type DiscoveredWorkflowRegistration } from "@/lib/keeperhub/evidence";
-import { canAuthorizeKeeperHubRegistration, requestKeeperHubRegistrationSignature, type CurrentVaultEvidence } from "@/lib/keeperhub/registration-gate";
+import { keeperHubRegistrationSuccessCopy } from "@/lib/keeperhub/registration-copy";
+import { canAuthorizeKeeperHubRegistration, registrationActionStillCurrent, requestKeeperHubRegistrationSignature, type CurrentVaultEvidence, type RegistrationActionContext } from "@/lib/keeperhub/registration-gate";
 import { readinessNextSteps, type KeeperHubReadiness } from "@/lib/keeperhub/readiness";
 import { shouldApplyVaultSnapshot } from "@/lib/keeperhub/vault-snapshot";
 import { buildPolicyArguments, type PolicyDraft } from "@/lib/succession/draft";
@@ -53,11 +55,23 @@ type LoadedVault = {
   pendingAt: bigint;
   deployedAtBlock: bigint;
   observedAt: bigint;
+  observedBlockNumber: bigint;
+  provenance: { kind: "factory_verified"; factory: Address; verifiedAtBlock: bigint };
   beneficiaries: LoadedBeneficiary[];
 };
 
 type Notice = { tone: "success" | "warning" | "danger"; text: string };
 type EvidenceRefresh = { state: "checking" | "refreshing" | "fresh" | "stale"; detail?: string };
+type VaultResolution = { state: "empty" } | { state: "loading" | "ready" | "invalid" | "unavailable"; target: Address; detail?: string };
+type VaultComposerKind = "fund" | "withdraw" | "update-policy";
+type VaultComposer = {
+  kind: VaultComposerKind;
+  target: Address;
+  actor: Address;
+  policyVersion: bigint;
+  selectionEpoch: number;
+};
+type ValueComposerSession = Omit<VaultComposer, "kind"> & { kind: "fund" | "withdraw" };
 const factoryAddress = process.env.NEXT_PUBLIC_LASTWISH_FACTORY_ADDRESS;
 const statusNames: VaultStatus[] = ["ACTIVE", "PENDING", "VETOED", "READY", "SETTLED"];
 
@@ -69,34 +83,67 @@ export function DashboardApp() {
   const publicClient = usePublicClient({ chainId: preferredChain.id });
   const [vaultAddress, setVaultAddress] = useState<Address>();
   const [vault, setVault] = useState<LoadedVault>();
+  const [vaultResolution, setVaultResolution] = useState<VaultResolution>({ state: "empty" });
   const [auditEvents, setAuditEvents] = useState<ChainAuditEvent[]>([]);
   const [keeperEvidence, setKeeperEvidence] = useState<KeeperHubEvidence[]>([]);
   const [discoveredWorkflows, setDiscoveredWorkflows] = useState<DiscoveredWorkflowRegistration[]>([]);
   const [executionEvidenceScope, setExecutionEvidenceScope] = useState<"recent_keeperhub_window_only">("recent_keeperhub_window_only");
   const [readiness, setReadiness] = useState<KeeperHubReadiness>({ status: "checking", nextStep: readinessNextSteps.checking });
   const [evidenceRefresh, setEvidenceRefresh] = useState<EvidenceRefresh>({ state: "checking" });
-  const [lastSuccessfulEvidenceVault, setLastSuccessfulEvidenceVault] = useState<Address>();
+  const [lastSuccessfulEvidence, setLastSuccessfulEvidence] = useState<{ vault: Address; policyVersion: bigint }>();
   const [walletAvailability, setWalletAvailability] = useState<"checking" | "available" | "unavailable">("checking");
   const [pendingAction, setPendingAction] = useState<DashboardAction | null>(null);
-  const [composer, setComposer] = useState<"fund" | "withdraw" | "update-policy" | null>(null);
+  const [composer, setComposer] = useState<VaultComposer | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [transactionProgress, setTransactionProgress] = useState<WalletTransactionProgress>();
   const blockTimestampCache = useRef(new Map<bigint, bigint>());
   const activeVaultRef = useRef<Address | undefined>(undefined);
+  const vaultRef = useRef<LoadedVault | undefined>(undefined);
+  const vaultRequestGuard = useRef(new AbortableRequestGeneration());
+  const evidenceRequestGuard = useRef(new AbortableRequestGeneration());
+  const latestAppliedBlock = useRef<bigint | undefined>(undefined);
+  const selectionEpoch = useRef(0);
+  const actionEpoch = useRef(0);
+  const evidenceGeneration = useRef(0);
+  const accountRef = useRef(account);
+  const chainIdRef = useRef(chainId);
+  const readinessRef = useRef(readiness);
+  const currentVaultEvidenceRef = useRef<CurrentVaultEvidence>("unknown");
+  const automationHealthRef = useRef(deriveAutomationHealth([]));
+  const lastSuccessfulEvidenceRef = useRef<{ vault: Address; policyVersion: bigint } | undefined>(undefined);
+
+  useLayoutEffect(() => {
+    if (accountRef.current?.toLowerCase() !== account?.toLowerCase() || chainIdRef.current !== chainId) actionEpoch.current += 1;
+    accountRef.current = account;
+    chainIdRef.current = chainId;
+  }, [account, chainId]);
 
   const resetAutomationEvidence = useCallback(() => {
     setKeeperEvidence([]);
     setDiscoveredWorkflows([]);
     setExecutionEvidenceScope("recent_keeperhub_window_only");
-    setLastSuccessfulEvidenceVault(undefined);
+    setLastSuccessfulEvidence(undefined);
+    lastSuccessfulEvidenceRef.current = undefined;
     setEvidenceRefresh({ state: "checking" });
+    evidenceRequestGuard.current.invalidate();
+    evidenceGeneration.current += 1;
+    actionEpoch.current += 1;
   }, []);
 
   const activateVault = useCallback((address: Address) => {
     if (activeVaultRef.current?.toLowerCase() === address.toLowerCase()) return;
+    selectionEpoch.current += 1;
+    actionEpoch.current += 1;
+    vaultRequestGuard.current.invalidate();
+    evidenceRequestGuard.current.invalidate();
+    latestAppliedBlock.current = undefined;
     activeVaultRef.current = address;
     setVault(undefined);
+    vaultRef.current = undefined;
+    setVaultResolution({ state: "loading", target: address });
     setAuditEvents([]);
+    setComposer(null);
+    setNotice(null);
     resetAutomationEvidence();
     setVaultAddress(address);
   }, [resetAutomationEvidence]);
@@ -126,25 +173,26 @@ export function DashboardApp() {
   const refreshVault = useCallback(async () => {
     if (!vaultAddress || !publicClient) return;
     const requestedVault = vaultAddress;
+    const token = vaultRequestGuard.current.begin({ vault: requestedVault });
     try {
       const snapshotBlock = await publicClient.getBlock({ blockTag: "latest" });
       const blockNumber = snapshotBlock.number;
       const [owner, guardian, policyVersion, statusCode, beneficiaryCount, heartbeatInterval, gracePeriod, lastHeartbeat, pendingAt, deployedAtBlock, balance] = await Promise.all([
-        publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "owner", blockNumber }),
-        publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "guardian", blockNumber }),
-        publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "policyVersion", blockNumber }),
-        publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "status", blockNumber }),
-        publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "beneficiaryCount", blockNumber }),
-        publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "heartbeatInterval", blockNumber }),
-        publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "gracePeriod", blockNumber }),
-        publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "lastHeartbeat", blockNumber }),
-        publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "pendingAt", blockNumber }),
-        publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "deployedAtBlock", blockNumber }),
-        publicClient.getBalance({ address: vaultAddress, blockNumber }),
+        publicClient.readContract({ address: requestedVault, abi: vaultAbi, functionName: "owner", blockNumber }),
+        publicClient.readContract({ address: requestedVault, abi: vaultAbi, functionName: "guardian", blockNumber }),
+        publicClient.readContract({ address: requestedVault, abi: vaultAbi, functionName: "policyVersion", blockNumber }),
+        publicClient.readContract({ address: requestedVault, abi: vaultAbi, functionName: "status", blockNumber }),
+        publicClient.readContract({ address: requestedVault, abi: vaultAbi, functionName: "beneficiaryCount", blockNumber }),
+        publicClient.readContract({ address: requestedVault, abi: vaultAbi, functionName: "heartbeatInterval", blockNumber }),
+        publicClient.readContract({ address: requestedVault, abi: vaultAbi, functionName: "gracePeriod", blockNumber }),
+        publicClient.readContract({ address: requestedVault, abi: vaultAbi, functionName: "lastHeartbeat", blockNumber }),
+        publicClient.readContract({ address: requestedVault, abi: vaultAbi, functionName: "pendingAt", blockNumber }),
+        publicClient.readContract({ address: requestedVault, abi: vaultAbi, functionName: "deployedAtBlock", blockNumber }),
+        publicClient.getBalance({ address: requestedVault, blockNumber }),
       ]);
       const addresses = await Promise.all(
         Array.from({ length: Number(beneficiaryCount) }, (_, index) =>
-          publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "beneficiaryAt", args: [BigInt(index)], blockNumber }),
+          publicClient.readContract({ address: requestedVault, abi: vaultAbi, functionName: "beneficiaryAt", args: [BigInt(index)], blockNumber }),
         ),
       );
       if (!factoryAddress || !isAddress(factoryAddress)) {
@@ -162,15 +210,15 @@ export function DashboardApp() {
       }
       const chainBeneficiaries = await Promise.all(addresses.map(async (address) => {
         const [shareBps, claimableWei] = await Promise.all([
-          publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "shareBps", args: [address], blockNumber }),
-          publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "claimable", args: [address], blockNumber }),
+          publicClient.readContract({ address: requestedVault, abi: vaultAbi, functionName: "shareBps", args: [address], blockNumber }),
+          publicClient.readContract({ address: requestedVault, abi: vaultAbi, functionName: "claimable", args: [address], blockNumber }),
         ]);
         return { address, shareBps: Number(shareBps), claimableWei };
       }));
-      const labelKey = `lastwish:labels:${preferredChain.id}:${vaultAddress}`;
+      const labelKey = `lastwish:labels:${preferredChain.id}:${requestedVault}`;
       const beneficiaries = mergeBeneficiaryLabels(chainBeneficiaries, parseBeneficiaryLabels(window.localStorage.getItem(labelKey)));
-      if (!shouldApplyVaultSnapshot(requestedVault, activeVaultRef.current)) return;
-      setVault({
+      if (!shouldApplyVaultSnapshot(requestedVault, activeVaultRef.current) || !shouldApplyVaultBlock(token, vaultRequestGuard.current, blockNumber, latestAppliedBlock.current)) return;
+      const loadedVault: LoadedVault = {
         address: requestedVault,
         owner,
         guardian,
@@ -183,29 +231,48 @@ export function DashboardApp() {
         pendingAt,
         deployedAtBlock,
         observedAt: snapshotBlock.timestamp,
+        observedBlockNumber: blockNumber,
+        provenance: { kind: "factory_verified", factory: getAddress(factoryAddress), verifiedAtBlock: blockNumber },
         beneficiaries,
-      });
+      };
+      const policyChanged = vaultRef.current !== undefined && vaultRef.current.policyVersion !== loadedVault.policyVersion;
+      if (policyChanged) {
+        resetAutomationEvidence();
+        setComposer(null);
+      }
+      latestAppliedBlock.current = blockNumber;
+      vaultRef.current = loadedVault;
+      setVault(loadedVault);
+      setVaultResolution({ state: "ready", target: requestedVault });
       window.localStorage.setItem(`lastwish:vault:${preferredChain.id}`, requestedVault);
 
       try {
-        const logs = await publicClient.getContractEvents({ address: requestedVault, abi: vaultAbi, fromBlock: deployedAtBlock });
+        const logs = await publicClient.getContractEvents({ address: requestedVault, abi: vaultAbi, fromBlock: deployedAtBlock, toBlock: blockNumber });
         const blockNumbers = [...new Set(logs.map((log) => log.blockNumber).filter((block): block is bigint => block !== null))];
         const missingBlocks = blockNumbers.filter((blockNumber) => !blockTimestampCache.current.has(blockNumber));
         const blocks = await Promise.all(missingBlocks.map((blockNumber) => publicClient.getBlock({ blockNumber })));
         for (const block of blocks) blockTimestampCache.current.set(block.number, block.timestamp);
-        if (!shouldApplyVaultSnapshot(requestedVault, activeVaultRef.current)) return;
+        if (!shouldApplyVaultSnapshot(requestedVault, activeVaultRef.current) || !shouldApplyVaultBlock(token, vaultRequestGuard.current, blockNumber, latestAppliedBlock.current)) return;
         setAuditEvents(buildChainAuditEvents(logs, blockTimestampCache.current));
       } catch (error) {
-        if (!shouldApplyVaultSnapshot(requestedVault, activeVaultRef.current)) return;
+        if (!shouldApplyVaultSnapshot(requestedVault, activeVaultRef.current) || !shouldApplyVaultBlock(token, vaultRequestGuard.current, blockNumber, latestAppliedBlock.current)) return;
         setAuditEvents([]);
         setNotice({ tone: "warning", text: `Vault loaded, but audit indexing is temporarily unavailable: ${errorMessage(error)}` });
       }
     } catch (error) {
-      if (!shouldApplyVaultSnapshot(requestedVault, activeVaultRef.current)) return;
-      setVault(undefined);
-      setNotice({ tone: "danger", text: `Could not read this vault on ${preferredChain.name}: ${errorMessage(error)}` });
+      if (!vaultRequestGuard.current.isCurrent(token) || !shouldApplyVaultSnapshot(requestedVault, activeVaultRef.current)) return;
+      const current = vaultRef.current;
+      if (isVerifiedVaultActionTarget(requestedVault, current, factoryAddress)) {
+        setVaultResolution({ state: "ready", target: requestedVault });
+        setNotice({ tone: "warning", text: `The latest vault refresh was unavailable; retaining the last factory-verified snapshot: ${errorMessage(error)}` });
+      } else {
+        setVault(undefined);
+        vaultRef.current = undefined;
+        setVaultResolution({ state: "invalid", target: requestedVault, detail: errorMessage(error) });
+        setNotice({ tone: "danger", text: `Could not verify this address as a factory-proven LastWish vault on ${preferredChain.name}: ${errorMessage(error)}` });
+      }
     }
-  }, [publicClient, vaultAddress]);
+  }, [publicClient, resetAutomationEvidence, vaultAddress]);
 
   useEffect(() => {
     const kickoff = window.setTimeout(() => void refreshVault(), 0);
@@ -232,50 +299,82 @@ export function DashboardApp() {
   }, [account, activateVault, publicClient, vaultAddress]);
 
   const refreshEvidence = useCallback(async () => {
-    if (!vaultAddress) return;
+    const snapshot = vaultRef.current;
+    if (!vaultAddress || !snapshot || !isVerifiedVaultActionTarget(vaultAddress, snapshot, factoryAddress)) return;
     const requestedVault = vaultAddress;
+    const requestedPolicyVersion = snapshot.policyVersion;
+    const token = evidenceRequestGuard.current.begin({ vault: requestedVault, policyVersion: requestedPolicyVersion });
+    evidenceGeneration.current = token.generation;
+    actionEpoch.current += 1;
     setEvidenceRefresh({ state: "refreshing" });
     try {
       const response = await fetch("/api/keeperhub/evidence", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chainId: preferredChain.id, vault: vaultAddress }),
+        body: JSON.stringify({ chainId: preferredChain.id, vault: requestedVault }),
+        signal: token.signal,
       });
       if (!response.ok) throw new Error("KeeperHub evidence refresh was unavailable.");
       const body = await response.json() as {
         workflows?: DiscoveredWorkflowRegistration[];
+        chainId?: number;
+        vault?: string;
+        policyVersion?: string;
         executionEvidenceScope?: "recent_keeperhub_window_only";
         evidence?: Array<Omit<KeeperHubEvidence, "blockNumber" | "gasUsed" | "timestamp"> & { blockNumber?: string; gasUsed?: string; timestamp?: string }>;
       };
-      if (activeVaultRef.current?.toLowerCase() !== requestedVault.toLowerCase()) return;
-      setDiscoveredWorkflows(body.workflows ?? []);
+      const responsePolicyVersion = body.policyVersion && /^\d+$/.test(body.policyVersion) ? BigInt(body.policyVersion) : undefined;
+      if (!Array.isArray(body.workflows) || !Array.isArray(body.evidence)) {
+        throw new Error("KeeperHub returned invalid evidence data.");
+      }
+      if (!shouldApplyEvidenceResponse(token, evidenceRequestGuard.current, {
+        requestedChainId: preferredChain.id,
+        activeVault: activeVaultRef.current,
+        currentPolicyVersion: vaultRef.current?.policyVersion,
+        responseChainId: body.chainId,
+        responseVault: body.vault,
+        responsePolicyVersion,
+      })) {
+        if (token.signal.aborted || !evidenceRequestGuard.current.isCurrent(token)) return;
+        throw new Error("KeeperHub evidence did not match the active vault and policy.");
+      }
+      setDiscoveredWorkflows(body.workflows);
       setExecutionEvidenceScope(body.executionEvidenceScope ?? "recent_keeperhub_window_only");
-      setKeeperEvidence((body.evidence ?? []).map((item) => ({
+      setKeeperEvidence(body.evidence.map((item) => ({
         ...item,
         blockNumber: item.blockNumber === undefined ? undefined : BigInt(item.blockNumber),
         gasUsed: item.gasUsed === undefined ? undefined : BigInt(item.gasUsed),
         timestamp: item.timestamp === undefined ? undefined : BigInt(item.timestamp),
       })));
-      setLastSuccessfulEvidenceVault(requestedVault);
+      const successfulContext = { vault: requestedVault, policyVersion: requestedPolicyVersion };
+      lastSuccessfulEvidenceRef.current = successfulContext;
+      setLastSuccessfulEvidence(successfulContext);
       setEvidenceRefresh({ state: "fresh", detail: "Evidence refreshed from KeeperHub's recent provider window." });
-    } catch {
-      if (activeVaultRef.current?.toLowerCase() !== requestedVault.toLowerCase()) return;
-      const hasPriorSuccess = lastSuccessfulEvidenceVault?.toLowerCase() === requestedVault.toLowerCase();
+    } catch (error) {
+      if (isAbortError(error) || token.signal.aborted || !evidenceRequestGuard.current.isCurrent(token) || activeVaultRef.current?.toLowerCase() !== requestedVault.toLowerCase()) return;
+      const priorSuccess = lastSuccessfulEvidenceRef.current;
+      const hasPriorSuccess = priorSuccess?.vault.toLowerCase() === requestedVault.toLowerCase() && priorSuccess.policyVersion === requestedPolicyVersion;
       setEvidenceRefresh(hasPriorSuccess
         ? { state: "stale", detail: "Evidence refresh failed. Showing the last reconciled evidence; refresh is read-only and will not rebroadcast a transaction." }
         : { state: "stale", detail: "Evidence could not be reconciled yet. Registration remains unavailable until a successful current-vault refresh." });
     }
-  }, [lastSuccessfulEvidenceVault, vaultAddress]);
+  }, [vaultAddress]);
 
   const refreshReadiness = useCallback(async () => {
-    setReadiness({ status: "checking", nextStep: readinessNextSteps.checking });
+    actionEpoch.current += 1;
+    const checking: KeeperHubReadiness = { status: "checking", nextStep: readinessNextSteps.checking };
+    readinessRef.current = checking;
+    setReadiness(checking);
     try {
       const response = await fetch(`/api/keeperhub/readiness?chainId=${preferredChain.id}`);
       const body = await response.json() as Partial<KeeperHubReadiness>;
       if (!response.ok || !isReadiness(body)) throw new Error("Invalid readiness response");
+      readinessRef.current = body;
       setReadiness(body);
     } catch {
-      setReadiness({ status: "preflight_unavailable", nextStep: readinessNextSteps.preflight_unavailable });
+      const unavailable: KeeperHubReadiness = { status: "preflight_unavailable", nextStep: readinessNextSteps.preflight_unavailable };
+      readinessRef.current = unavailable;
+      setReadiness(unavailable);
     }
   }, []);
 
@@ -285,11 +384,11 @@ export function DashboardApp() {
   }, [refreshReadiness]);
 
   useEffect(() => {
-    if (!vaultAddress) return;
+    if (!vaultAddress || vaultResolution.state !== "ready" || vault?.policyVersion === undefined) return;
     const kickoff = window.setTimeout(() => void refreshEvidence(), 0);
     const interval = window.setInterval(() => { if (!document.hidden) void refreshEvidence(); }, 30_000);
     return () => { window.clearTimeout(kickoff); window.clearInterval(interval); };
-  }, [refreshEvidence, vaultAddress]);
+  }, [refreshEvidence, vaultAddress, vault?.policyVersion, vaultResolution.state]);
 
   const role = useMemo<DashboardRole>(() => {
     if (!account || !vault || !vaultAddress || !shouldApplyVaultSnapshot(vault.address, vaultAddress)) return "observer";
@@ -305,14 +404,18 @@ export function DashboardApp() {
   const lifecycle = useMemo(() => vault ? buildLifecycleSummary(vault, vault.observedAt) : undefined, [vault]);
   const automationHealth = useMemo(() => deriveAutomationHealth(discoveredWorkflows), [discoveredWorkflows]);
   const currentVaultEvidence = useMemo<CurrentVaultEvidence>(() => {
-    const hasCurrentSuccess = Boolean(vaultAddress && lastSuccessfulEvidenceVault?.toLowerCase() === vaultAddress.toLowerCase());
+    const hasCurrentSuccess = Boolean(vaultAddress && vault && lastSuccessfulEvidence?.vault.toLowerCase() === vaultAddress.toLowerCase() && lastSuccessfulEvidence.policyVersion === vault.policyVersion);
     if (!hasCurrentSuccess) return evidenceRefresh.state === "refreshing" ? "refreshing" : "unknown";
     if (evidenceRefresh.state === "fresh") return "fresh";
     if (evidenceRefresh.state === "refreshing") return "refreshing";
     if (evidenceRefresh.state === "stale") return "stale_with_success";
     return "unknown";
-  }, [evidenceRefresh.state, lastSuccessfulEvidenceVault, vaultAddress]);
-  const vaultSnapshotMatches = Boolean(vaultAddress && vault && shouldApplyVaultSnapshot(vault.address, vaultAddress));
+  }, [evidenceRefresh.state, lastSuccessfulEvidence, vault, vaultAddress]);
+  useLayoutEffect(() => {
+    currentVaultEvidenceRef.current = currentVaultEvidence;
+    automationHealthRef.current = automationHealth;
+  }, [automationHealth, currentVaultEvidence]);
+  const vaultSnapshotMatches = isVerifiedVaultActionTarget(vaultAddress, vault, factoryAddress);
   const canRegisterAutomation = canAuthorizeKeeperHubRegistration({
     activeOwner: role === "owner",
     vaultSnapshotMatches,
@@ -321,25 +424,69 @@ export function DashboardApp() {
     automation: automationHealth.state,
   });
 
+  function currentVerifiedVault(expectedTarget?: Address, expectedPolicyVersion?: bigint): LoadedVault | undefined {
+    const activeVault = activeVaultRef.current;
+    const snapshot = vaultRef.current;
+    if (!isVerifiedVaultActionTarget(activeVault, snapshot, factoryAddress)) return undefined;
+    if (expectedTarget && activeVault?.toLowerCase() !== expectedTarget.toLowerCase()) return undefined;
+    if (expectedPolicyVersion !== undefined && snapshot?.policyVersion !== expectedPolicyVersion) return undefined;
+    return snapshot;
+  }
+
+  function currentRegistrationContext(): RegistrationActionContext | undefined {
+    const currentAccount = accountRef.current;
+    const currentChainId = chainIdRef.current;
+    const activeVault = activeVaultRef.current;
+    const snapshot = currentVerifiedVault();
+    if (!currentAccount || currentChainId !== preferredChain.id || !activeVault || !snapshot || snapshot.status === "SETTLED") return undefined;
+    const activeOwner = snapshot.owner.toLowerCase() === currentAccount.toLowerCase();
+    const snapshotMatches = isVerifiedVaultActionTarget(activeVault, snapshot, factoryAddress);
+    return {
+      actionEpoch: actionEpoch.current,
+      selectionEpoch: selectionEpoch.current,
+      evidenceGeneration: evidenceGeneration.current,
+      account: currentAccount,
+      chainId: currentChainId,
+      activeVault,
+      snapshotVault: snapshot.address,
+      policyVersion: snapshot.policyVersion,
+      activeOwner,
+      vaultSnapshotMatches: snapshotMatches,
+      readiness: readinessRef.current.status,
+      currentVaultEvidence: currentVaultEvidenceRef.current,
+      automation: automationHealthRef.current.state,
+    };
+  }
+
   async function executeSimpleAction(action: Exclude<DashboardAction, "fund" | "withdraw" | "update-policy" | "register">) {
-    if (!walletClient || !vaultAddress || !publicClient) return;
+    const target = currentVerifiedVault();
+    if (!walletClient || !target || !publicClient) {
+      setNotice({ tone: "warning", text: "Wait for factory provenance verification before submitting a vault transaction." });
+      return;
+    }
     const functionName = { heartbeat: "heartbeat", veto: "vetoSettlement", claim: "claim" }[action] as "heartbeat" | "vetoSettlement" | "claim";
     setPendingAction(action); setNotice(null);
-    setTransactionProgress({ label: labelForAction(action), stage: "AWAITING_SIGNATURE" });
+    setTransactionProgress({ label: labelForAction(action), stage: "AWAITING_SIGNATURE", target: target.address });
     try {
-      const hash = await walletClient.writeContract({ address: vaultAddress, abi: vaultAbi, functionName });
-      setTransactionProgress({ label: labelForAction(action), stage: "CONFIRMING", transactionHash: hash });
+      const hash = await walletClient.writeContract({ address: target.address, abi: vaultAbi, functionName });
+      if (currentVerifiedVault(target.address)) setTransactionProgress({ label: labelForAction(action), stage: "CONFIRMING", target: target.address, transactionHash: hash });
       const receipt = assertSuccessfulReceipt(await publicClient.waitForTransactionReceipt({ hash }));
-      setNotice({ tone: "success", text: `${labelForAction(action)} confirmed in block ${receipt.blockNumber}.` });
+      if (currentVerifiedVault(target.address)) setNotice({ tone: "success", text: `${labelForAction(action)} confirmed in block ${receipt.blockNumber}.` });
       await refreshVault();
     } catch (error) {
-      setNotice({ tone: "danger", text: errorMessage(error) });
+      if (currentVerifiedVault(target.address)) setNotice({ tone: "danger", text: errorMessage(error) });
     } finally { setPendingAction(null); setTransactionProgress(undefined); }
   }
 
   function handleAction(action: DashboardAction) {
     if (action === "fund" || action === "withdraw" || action === "update-policy") {
-      setComposer(action); return;
+      const target = currentVerifiedVault();
+      if (!target || !account || chainId !== preferredChain.id) {
+        setNotice({ tone: "warning", text: "Wait for factory provenance verification before opening a vault transaction." });
+        return;
+      }
+      setComposer({ kind: action, target: target.address, actor: account, policyVersion: target.policyVersion, selectionEpoch: selectionEpoch.current });
+      return;
     }
     if (action === "register") { void registerKeeperHub(); return; }
     void executeSimpleAction(action);
@@ -351,14 +498,14 @@ export function DashboardApp() {
       setNotice({ tone: "danger", text: "Vault deployment is unavailable until NEXT_PUBLIC_LASTWISH_FACTORY_ADDRESS is configured." }); return;
     }
     setPendingAction("update-policy"); setNotice(null);
-    setTransactionProgress({ label: "Deploy vault", stage: "AWAITING_SIGNATURE" });
+    setTransactionProgress({ label: "Deploy vault", stage: "AWAITING_SIGNATURE", target: getAddress(factoryAddress) });
     try {
       const args = buildPolicyArguments(draft);
       const hash = await walletClient.writeContract({
         address: getAddress(factoryAddress), abi: factoryAbi, functionName: "createVault",
         args: [args.guardian, args.beneficiaryAddresses, args.shares, args.heartbeatSeconds, args.graceSeconds, args.testnetDemo],
       });
-      setTransactionProgress({ label: "Deploy vault", stage: "CONFIRMING", transactionHash: hash });
+      setTransactionProgress({ label: "Deploy vault", stage: "CONFIRMING", target: getAddress(factoryAddress), transactionHash: hash });
       const receipt = assertSuccessfulReceipt(await publicClient.waitForTransactionReceipt({ hash }));
       const [created] = parseEventLogs({ abi: factoryAbi, eventName: "VaultCreated", logs: receipt.logs });
       if (!created) throw new Error("The factory receipt did not contain VaultCreated.");
@@ -371,54 +518,63 @@ export function DashboardApp() {
     finally { setPendingAction(null); setTransactionProgress(undefined); }
   }
 
-  async function updatePolicy(draft: PolicyDraft) {
-    if (!walletClient || !publicClient || !vaultAddress) return;
+  async function updatePolicy(targetAddress: Address, expectedPolicyVersion: bigint, draft: PolicyDraft) {
+    const target = currentVerifiedVault(targetAddress, expectedPolicyVersion);
+    if (!walletClient || !publicClient || !target) {
+      setNotice({ tone: "warning", text: "The policy target changed. Reopen the editor from the verified vault." });
+      return;
+    }
     setPendingAction("update-policy");
-    setTransactionProgress({ label: "Update policy", stage: "AWAITING_SIGNATURE" });
+    setTransactionProgress({ label: "Update policy", stage: "AWAITING_SIGNATURE", target: target.address });
     try {
       const args = buildPolicyArguments(draft);
-      const hash = await walletClient.writeContract({ address: vaultAddress, abi: vaultAbi, functionName: "updatePolicy", args: [args.guardian, args.beneficiaryAddresses, args.shares, args.heartbeatSeconds, args.graceSeconds, args.testnetDemo] });
-      setTransactionProgress({ label: "Update policy", stage: "CONFIRMING", transactionHash: hash });
+      const hash = await walletClient.writeContract({ address: target.address, abi: vaultAbi, functionName: "updatePolicy", args: [args.guardian, args.beneficiaryAddresses, args.shares, args.heartbeatSeconds, args.graceSeconds, args.testnetDemo] });
+      if (currentVerifiedVault(target.address, target.policyVersion)) setTransactionProgress({ label: "Update policy", stage: "CONFIRMING", target: target.address, transactionHash: hash });
       const receipt = assertSuccessfulReceipt(await publicClient.waitForTransactionReceipt({ hash }));
-      window.localStorage.setItem(`lastwish:labels:${preferredChain.id}:${vaultAddress}`, JSON.stringify(labelsFromDraft(draft.beneficiaries)));
-      resetAutomationEvidence();
-      setComposer(null); setNotice({ tone: "success", text: `Policy update confirmed in block ${receipt.blockNumber}. The heartbeat clock reset.` });
+      window.localStorage.setItem(`lastwish:labels:${preferredChain.id}:${target.address}`, JSON.stringify(labelsFromDraft(draft.beneficiaries)));
+      if (currentVerifiedVault(target.address)) {
+        resetAutomationEvidence();
+        setComposer(null);
+        setNotice({ tone: "success", text: `Policy update confirmed in block ${receipt.blockNumber}. The heartbeat clock reset.` });
+      }
       await refreshVault();
-    } catch (error) { setNotice({ tone: "danger", text: errorMessage(error) }); }
+    } catch (error) { if (currentVerifiedVault(target.address)) setNotice({ tone: "danger", text: errorMessage(error) }); }
     finally { setPendingAction(null); setTransactionProgress(undefined); }
   }
 
-  async function transferValue(kind: "fund" | "withdraw", recipient: string, amount: string) {
-    if (!walletClient || !publicClient || !vaultAddress || !isAddress(recipient)) return;
+  async function transferValue(kind: "fund" | "withdraw", targetAddress: Address, expectedPolicyVersion: bigint, recipient: string, amount: string) {
+    const target = currentVerifiedVault(targetAddress, expectedPolicyVersion);
+    if (!walletClient || !publicClient || !target || !isAddress(recipient)) {
+      setNotice({ tone: "warning", text: "The transaction target is no longer the verified active vault. Reopen the composer." });
+      return;
+    }
     setPendingAction(kind);
     const transactionLabel = kind === "fund" ? "Fund vault" : "Withdraw funds";
-    setTransactionProgress({ label: transactionLabel, stage: "AWAITING_SIGNATURE" });
+    setTransactionProgress({ label: transactionLabel, stage: "AWAITING_SIGNATURE", target: target.address });
     try {
       const value = parseEther(amount);
       const hash = kind === "fund"
-        ? await walletClient.sendTransaction({ to: vaultAddress, value })
-        : await walletClient.writeContract({ address: vaultAddress, abi: vaultAbi, functionName: "withdraw", args: [getAddress(recipient), value] });
-      setTransactionProgress({ label: transactionLabel, stage: "CONFIRMING", transactionHash: hash });
+        ? await walletClient.sendTransaction({ to: target.address, value })
+        : await walletClient.writeContract({ address: target.address, abi: vaultAbi, functionName: "withdraw", args: [getAddress(recipient), value] });
+      if (currentVerifiedVault(target.address, target.policyVersion)) setTransactionProgress({ label: transactionLabel, stage: "CONFIRMING", target: target.address, transactionHash: hash });
       const receipt = assertSuccessfulReceipt(await publicClient.waitForTransactionReceipt({ hash }));
-      setComposer(null); setNotice({ tone: "success", text: `${kind === "fund" ? "Funding" : "Withdrawal"} confirmed in block ${receipt.blockNumber}.` });
+      if (currentVerifiedVault(target.address)) {
+        setComposer(null);
+        setNotice({ tone: "success", text: `${kind === "fund" ? "Funding" : "Withdrawal"} confirmed in block ${receipt.blockNumber}.` });
+      }
       await refreshVault();
-    } catch (error) { setNotice({ tone: "danger", text: errorMessage(error) }); }
+    } catch (error) { if (currentVerifiedVault(target.address)) setNotice({ tone: "danger", text: errorMessage(error) }); }
     finally { setPendingAction(null); setTransactionProgress(undefined); }
   }
 
   async function registerKeeperHub() {
-    if (!vaultAddress || !vault || !walletClient || !account || !vaultSnapshotMatches || vault.owner.toLowerCase() !== account.toLowerCase()) return;
-    if (!canAuthorizeKeeperHubRegistration({
-      activeOwner: true,
-      vaultSnapshotMatches,
-      readiness: readiness.status,
-      currentVaultEvidence,
-      automation: automationHealth.state,
-    })) {
+    actionEpoch.current += 1;
+    const registration = currentRegistrationContext();
+    if (!walletClient || !registration || !canAuthorizeKeeperHubRegistration(registration)) {
       setNotice({
         tone: "warning",
-        text: readiness.status !== "ready"
-          ? readiness.nextStep
+        text: readinessRef.current.status !== "ready"
+          ? readinessRef.current.nextStep
           : "Reconcile current-vault KeeperHub evidence before authorizing a repair signature.",
       });
       return;
@@ -427,43 +583,45 @@ export function DashboardApp() {
     try {
       const scheduleCron = "*/5 * * * *";
       const expiresAt = Math.floor(Date.now() / 1_000) + 300;
-      setTransactionProgress({ label: "Authorize KeeperHub setup", stage: "AWAITING_SIGNATURE" });
-      const signature = await requestKeeperHubRegistrationSignature({
-        activeOwner: true,
-        vaultSnapshotMatches,
-        readiness: readiness.status,
-        currentVaultEvidence,
-        automation: automationHealth.state,
-      }, () => walletClient.signMessage({
-        account,
+      setTransactionProgress({ label: "Authorize KeeperHub setup", stage: "AWAITING_SIGNATURE", target: registration.activeVault });
+      const signature = await requestKeeperHubRegistrationSignature(registration, currentRegistrationContext, () => walletClient.signMessage({
+        account: registration.account,
         message: buildWorkflowAuthorizationMessage({
           chainId: preferredChain.id,
-          vault: vaultAddress,
-          policyVersion: vault.policyVersion,
+          vault: registration.activeVault,
+          policyVersion: registration.policyVersion,
           scheduleCron,
           expiresAt,
         }),
       }));
-      if (!signature) return;
+      if (!signature || !registrationActionStillCurrent(registration, currentRegistrationContext())) return;
+      if (expiresAt <= Math.floor(Date.now() / 1_000)) {
+        setNotice({ tone: "warning", text: "The KeeperHub authorization expired while the wallet was open. Review and sign again." });
+        return;
+      }
       setTransactionProgress(undefined);
+      if (!registrationActionStillCurrent(registration, currentRegistrationContext())) return;
       const response = await fetch("/api/keeperhub/workflows", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           chainId: preferredChain.id,
-          vault: vaultAddress,
+          vault: registration.activeVault,
           scheduleCron,
-          policyVersion: vault.policyVersion.toString(),
+          policyVersion: registration.policyVersion.toString(),
           expiresAt,
-          signer: account,
+          signer: registration.account,
           signature,
         }),
       });
       const body = await response.json();
+      if (!registrationActionStillCurrent(registration, currentRegistrationContext())) return;
       if (!response.ok) throw new Error(body.error ?? "KeeperHub registration failed");
+      setNotice({ tone: "success", text: keeperHubRegistrationSuccessCopy(body.workflows) });
       await refreshEvidence();
-      setNotice({ tone: "success", text: `KeeperHub registered and preflighted ${body.workflows.length} scheduled workflows.` });
-    } catch (error) { setNotice({ tone: "danger", text: errorMessage(error) }); }
+    } catch (error) {
+      if (registrationActionStillCurrent(registration, currentRegistrationContext())) setNotice({ tone: "danger", text: errorMessage(error) });
+    }
     finally { setPendingAction(null); setTransactionProgress(undefined); }
   }
 
@@ -472,8 +630,10 @@ export function DashboardApp() {
     account={account}
     chainName={preferredChain.name}
     role={role}
-    status={vault?.status ?? "ACTIVE"}
+    status={vault?.status ?? "RECOVERY_REQUIRED"}
     vaultAddress={vaultAddress}
+    vaultResolution={vaultResolution.state}
+    vaultResolutionDetail={vaultResolution.state === "empty" ? undefined : vaultResolution.detail}
     balanceLabel={vault ? `${formatEther(vault.balanceWei)} ETH` : "—"}
     policyVersion={vault?.policyVersion.toString() ?? "—"}
     canRegisterAutomation={canRegisterAutomation}
@@ -505,6 +665,7 @@ export function DashboardApp() {
       vault={vault}
       vaultAddress={vaultAddress}
       setVaultAddress={activateVault}
+      configuredFactory={factoryAddress}
       pending={pendingAction !== null}
       composer={composer}
       closeComposer={() => setComposer(null)}
@@ -515,45 +676,90 @@ export function DashboardApp() {
   </DashboardView>;
 }
 
-function VaultWorkspace(props: {
+export function VaultWorkspace(props: {
   account?: Address;
   vault?: LoadedVault;
   vaultAddress?: Address;
   setVaultAddress(address: Address): void;
+  configuredFactory?: string;
   pending: boolean;
-  composer: "fund" | "withdraw" | "update-policy" | null;
+  composer: VaultComposer | null;
   closeComposer(): void;
   deployVault(draft: PolicyDraft): Promise<void>;
-  updatePolicy(draft: PolicyDraft): Promise<void>;
-  transferValue(kind: "fund" | "withdraw", recipient: string, amount: string): Promise<void>;
+  updatePolicy(target: Address, expectedPolicyVersion: bigint, draft: PolicyDraft): Promise<void>;
+  transferValue(kind: "fund" | "withdraw", target: Address, expectedPolicyVersion: bigint, recipient: string, amount: string): Promise<void>;
 }) {
   const [loadAddress, setLoadAddress] = useState("");
-  const [amount, setAmount] = useState("");
-  const [recipient, setRecipient] = useState(props.account ?? "");
+  const verifiedTarget = props.composer &&
+    props.account?.toLowerCase() === props.composer.actor.toLowerCase() &&
+    props.composer.selectionEpoch >= 0 &&
+    props.vault?.policyVersion === props.composer.policyVersion &&
+    props.vault.address.toLowerCase() === props.composer.target.toLowerCase() &&
+    isVerifiedVaultActionTarget(props.vaultAddress, props.vault, props.configuredFactory)
+      ? props.composer
+      : null;
   return <>
     <section className="vault-loader">
       <div><strong>{props.vaultAddress ? "Inspect another vault" : "Have a vault address?"}</strong><span>Chain reads verify ownership and state.</span></div>
-      <form onSubmit={(event) => { event.preventDefault(); if (isAddress(loadAddress)) props.setVaultAddress(getAddress(loadAddress)); }}>
-        <input aria-label="Vault address" placeholder="0x…" value={loadAddress} onChange={(event) => setLoadAddress(event.target.value)} />
-        <button disabled={!isAddress(loadAddress)}>Load vault</button>
+      <form onSubmit={(event) => { event.preventDefault(); if (!props.pending && isAddress(loadAddress)) props.setVaultAddress(getAddress(loadAddress)); }}>
+        <input aria-label="Vault address" placeholder="0x…" value={loadAddress} disabled={props.pending} onChange={(event) => setLoadAddress(event.target.value)} />
+        <button disabled={props.pending || !isAddress(loadAddress)}>Load vault</button>
       </form>
     </section>
     {!props.vaultAddress && props.account && <PolicyEditor owner={props.account} mode="create" pending={props.pending} onSubmit={props.deployVault} />}
-    {props.composer === "update-policy" && props.vault && <div className="composer"><button className="close-button" onClick={props.closeComposer}>Close</button><PolicyEditor owner={props.vault.owner} mode="update" pending={props.pending} initial={props.vault} onSubmit={props.updatePolicy} /></div>}
-    {(props.composer === "fund" || props.composer === "withdraw") && props.account && <section className="composer compact-composer">
-      <button className="close-button" onClick={props.closeComposer}>Close</button>
-      <p className="eyebrow">Wallet transaction</p><h2>{props.composer === "fund" ? "Fund vault" : "Withdraw while active"}</h2>
-      <form onSubmit={(event) => {
-        event.preventDefault();
-        if (props.composer !== "fund" && props.composer !== "withdraw") return;
-        void props.transferValue(props.composer, props.composer === "fund" ? props.vaultAddress! : recipient, amount);
-      }}>
-        {props.composer === "withdraw" && <label>Recipient<input value={recipient} onChange={(event) => setRecipient(event.target.value)} /></label>}
-        <label>Amount in ETH<input inputMode="decimal" placeholder="0.01" value={amount} onChange={(event) => setAmount(event.target.value)} /></label>
-        <button className="button" disabled={props.pending || !amount || (props.composer === "withdraw" && !isAddress(recipient))}>Review in wallet</button>
-      </form>
-    </section>}
+    {verifiedTarget?.kind === "update-policy" && props.vault && <div className="composer" key={composerKey(verifiedTarget)}>
+      <button type="button" className="close-button" onClick={props.closeComposer}>Close</button>
+      <p>Transaction target <code>{verifiedTarget.target}</code></p>
+      <PolicyEditor owner={props.vault.owner} mode="update" pending={props.pending} initial={props.vault} onSubmit={(draft) => props.updatePolicy(verifiedTarget.target, verifiedTarget.policyVersion, draft)} />
+    </div>}
+    {isValueComposer(verifiedTarget) && props.account && <ValueComposer
+      key={composerKey(verifiedTarget)}
+      account={props.account}
+      composer={verifiedTarget}
+      pending={props.pending}
+      closeComposer={props.closeComposer}
+      transferValue={props.transferValue}
+    />}
   </>;
+}
+
+function ValueComposer(props: {
+  account: Address;
+  composer: ValueComposerSession;
+  pending: boolean;
+  closeComposer(): void;
+  transferValue(kind: "fund" | "withdraw", target: Address, expectedPolicyVersion: bigint, recipient: string, amount: string): Promise<void>;
+}) {
+  const [amount, setAmount] = useState("");
+  const [recipient, setRecipient] = useState<string>(props.account);
+  return <section className="composer compact-composer">
+    <button type="button" className="close-button" onClick={props.closeComposer}>Close</button>
+    <p className="eyebrow">Wallet transaction</p><h2>{props.composer.kind === "fund" ? "Fund vault" : "Withdraw while active"}</h2>
+    <p>Transaction target <code>{props.composer.target}</code></p>
+    <form onSubmit={(event) => {
+      event.preventDefault();
+      if (props.pending) return;
+      void props.transferValue(
+        props.composer.kind,
+        props.composer.target,
+        props.composer.policyVersion,
+        props.composer.kind === "fund" ? props.composer.target : recipient,
+        amount,
+      );
+    }}>
+      {props.composer.kind === "withdraw" && <label>Recipient<input value={recipient} onChange={(event) => setRecipient(event.target.value)} /></label>}
+      <label>Amount in ETH<input inputMode="decimal" placeholder="0.01" value={amount} onChange={(event) => setAmount(event.target.value)} /></label>
+      <button className="button" disabled={props.pending || !amount || (props.composer.kind === "withdraw" && !isAddress(recipient))}>Review in wallet</button>
+    </form>
+  </section>;
+}
+
+function composerKey(composer: VaultComposer): string {
+  return `${composer.selectionEpoch}:${composer.target.toLowerCase()}:${composer.policyVersion}:${composer.kind}`;
+}
+
+function isValueComposer(composer: VaultComposer | null): composer is ValueComposerSession {
+  return composer?.kind === "fund" || composer?.kind === "withdraw";
 }
 
 export function PolicyEditor({ owner, mode, pending, initial, onSubmit }: { owner: Address; mode: "create" | "update"; pending: boolean; initial?: LoadedVault; onSubmit(draft: PolicyDraft): Promise<void> | void }) {
@@ -616,6 +822,7 @@ export function PolicyEditor({ owner, mode, pending, initial, onSubmit }: { owne
 }
 
 function errorMessage(error: unknown) { if (typeof error === "object" && error && "shortMessage" in error && typeof error.shortMessage === "string") return error.shortMessage; return error instanceof Error ? error.message : "The operation failed."; }
+function isAbortError(error: unknown) { return error instanceof DOMException && error.name === "AbortError"; }
 function labelForAction(action: string) { return ({ heartbeat: "Heartbeat", veto: "Guardian veto", claim: "Beneficiary claim" } as Record<string, string>)[action] ?? action; }
 
 function isReadiness(value: Partial<KeeperHubReadiness>): value is KeeperHubReadiness {

@@ -1,4 +1,7 @@
+import { z } from "zod";
+
 import { parseEnabledChains, parseWorkflowExecutions, type KeeperHubChain, type KeeperHubWorkflowExecution } from "./client";
+import { parseWorkflowSimulation, type KeeperHubWorkflowSimulation } from "./simulation";
 import type { KeeperHubWorkflowDefinition } from "./workflow";
 
 const DEFAULT_BASE_URL = "https://app.keeperhub.com";
@@ -18,7 +21,19 @@ export type ContractCallRequest = {
   simulate?: boolean;
 };
 
-export type KeeperHubWorkflowSummary = { id: string; name: string; description?: string; createdAt?: string; enabled?: boolean };
+const workflowSummarySchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  description: z.string().nullable().transform((value) => value ?? undefined),
+  createdAt: z.string(),
+  enabled: z.boolean(),
+  nodes: z.array(z.unknown()),
+  edges: z.array(z.unknown()),
+  deletedAt: z.string().nullable(),
+  deactivatedAt: z.string().nullable(),
+});
+
+export type KeeperHubWorkflowSummary = z.infer<typeof workflowSummarySchema>;
 export type KeeperHubIntegrationSummary = { id: string; name: string; type: string; address: string | null; isManaged?: boolean };
 
 export class KeeperHubClient {
@@ -38,9 +53,10 @@ export class KeeperHubClient {
     return parseEnabledChains(body);
   }
 
-  async createWorkflow(definition: KeeperHubWorkflowDefinition): Promise<Record<string, unknown>> {
+  async createWorkflow(definition: KeeperHubWorkflowDefinition, idempotencyKey: string): Promise<Record<string, unknown>> {
     const { body } = await this.request("/api/workflows/create", {
       method: "POST",
+      headers: { "Idempotency-Key": idempotencyKey },
       body: JSON.stringify(definition),
     });
     return unwrapData(body) as Record<string, unknown>;
@@ -49,14 +65,9 @@ export class KeeperHubClient {
   async listWorkflows(): Promise<KeeperHubWorkflowSummary[]> {
     const { body } = await this.request("/api/workflows");
     const candidate = unwrapData(body);
-    if (!Array.isArray(candidate)) throw new Error("KeeperHub returned an invalid workflow list.");
-    return candidate.flatMap((item) => {
-      if (typeof item !== "object" || item === null) return [];
-      const { id, name, description, createdAt, enabled } = item as Record<string, unknown>;
-      return typeof id === "string" && typeof name === "string"
-        ? [{ id, name, ...(typeof description === "string" ? { description } : {}), ...(typeof createdAt === "string" ? { createdAt } : {}), ...(typeof enabled === "boolean" ? { enabled } : {}) }]
-        : [];
-    });
+    const parsed = z.array(workflowSummarySchema).safeParse(candidate);
+    if (!parsed.success) throw new Error("KeeperHub returned an invalid workflow list.");
+    return parsed.data;
   }
 
   async listIntegrations(): Promise<KeeperHubIntegrationSummary[]> {
@@ -72,7 +83,7 @@ export class KeeperHubClient {
     });
   }
 
-  async simulateWorkflow(workflowId: string): Promise<Record<string, unknown>> {
+  async simulateWorkflow(workflowId: string): Promise<KeeperHubWorkflowSimulation> {
     const { body } = await this.request(`/api/workflows/${encodeURIComponent(workflowId)}/simulate`, {
       method: "POST",
     });
@@ -82,11 +93,11 @@ export class KeeperHubClient {
         const error = typeof response.error === "string" ? response.error.replaceAll("_", " ").toLowerCase() : "invalid response";
         throw new Error(`KeeperHub workflow simulation unavailable: ${error}.`);
       }
-      return response.result as Record<string, unknown>;
+      return parseWorkflowSimulation(response.result);
     }
     const legacy = unwrapData(body);
     if (typeof legacy !== "object" || legacy === null) throw new Error("KeeperHub returned an invalid workflow simulation response.");
-    return legacy as Record<string, unknown>;
+    return parseWorkflowSimulation(legacy);
   }
 
   async updateWorkflow(workflowId: string, patch: Record<string, unknown>): Promise<Record<string, unknown>> {

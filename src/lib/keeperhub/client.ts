@@ -35,17 +35,23 @@ const executionSchema = z.object({
 const workflowExecutionSchema = z.object({
   id: z.string(),
   workflowId: z.string(),
-  status: z.enum(["pending", "running", "success", "error", "cancelled"]),
-  startedAt: z.string().optional(),
-  completedAt: z.string().optional(),
+  status: z.enum(["pending", "running", "unconfirmed", "success", "error", "cancelled", "phantom", "system_error"]),
+  startedAt: z.string().nullable().optional(),
+  completedAt: z.string().nullable().optional(),
   transactionHashes: z.array(z.object({
     hash: hashSchema,
     nodeId: z.string(),
     nodeName: z.string(),
     chainId: z.number().optional(),
     network: z.string().optional(),
+    iterationIndex: z.number().optional(),
+    verified: z.boolean().optional(),
+    receiptStatus: z.enum(["success", "reverted", "not_found", "timeout", "safe_inner_failure"]).optional(),
+    blockNumber: z.number().optional(),
+    gasUsed: z.string().optional(),
+    verifiedAt: z.string().optional(),
   })).default([]),
-});
+}).passthrough();
 
 const workflowLogResponseSchema = z.object({
   execution: z.object({ id: z.string(), workflowId: z.string(), status: z.string() }).passthrough(),
@@ -56,10 +62,11 @@ const workflowLogResponseSchema = z.object({
     nodeName: z.string(),
     nodeType: z.string(),
     status: z.string(),
-    input: z.record(z.string(), z.unknown()),
-    output: z.record(z.string(), z.unknown()).nullable(),
+    input: z.unknown().nullable().optional(),
+    output: z.unknown().nullable().optional(),
+    outputRaw: z.unknown().nullable().optional(),
     error: z.string().nullable(),
-    duration: z.string(),
+    duration: z.string().nullable(),
     startedAt: z.string(),
     completedAt: z.string().nullable(),
   }).passthrough()),
@@ -68,6 +75,10 @@ const workflowLogResponseSchema = z.object({
 export type KeeperHubChain = z.infer<typeof chainSchema>;
 export type KeeperHubExecutionResponse = z.input<typeof executionSchema>;
 export type KeeperHubWorkflowExecution = z.infer<typeof workflowExecutionSchema>;
+export type WorkflowLogInspection =
+  | { kind: "write"; transactionHash: Address }
+  | { kind: "no_write" }
+  | { kind: "unknown" };
 export type SettlementAction = "openSettlement" | "finalizeSettlement";
 
 export function parseEnabledChains(input: unknown): KeeperHubChain[] {
@@ -166,16 +177,63 @@ export function verifyKeeperHubWriteLog(
 ): boolean {
   const parsed = workflowLogResponseSchema.safeParse(input);
   if (!parsed.success) return false;
-  if (parsed.data.execution.id !== expectedExecutionId || parsed.data.execution.workflowId !== expectedWorkflowId) return false;
+  if (parsed.data.execution.id !== expectedExecutionId || parsed.data.execution.workflowId !== expectedWorkflowId || parsed.data.execution.status !== "success") return false;
   return parsed.data.logs.some((log) => {
-    const hash = log.output?.transactionHash;
+    const output = objectValue(log.outputRaw ?? log.output);
+    const hash = output?.transactionHash;
     return log.executionId === expectedExecutionId &&
+      log.nodeId === "execute" &&
       log.nodeType === "web3/write-contract" &&
       log.status === "success" &&
-      log.output?.success === true &&
+      output?.success === true &&
       typeof hash === "string" &&
       hash.toLowerCase() === transactionHash.toLowerCase();
   });
+}
+
+export function inspectWorkflowExecutionLogs(
+  input: unknown,
+  expectedExecutionId: string,
+  expectedWorkflowId: string,
+): WorkflowLogInspection {
+  const parsed = workflowLogResponseSchema.safeParse(input);
+  if (!parsed.success || parsed.data.execution.id !== expectedExecutionId || parsed.data.execution.workflowId !== expectedWorkflowId) {
+    return { kind: "unknown" };
+  }
+  const writeLogs = parsed.data.logs.filter((log) =>
+    log.executionId === expectedExecutionId &&
+    (log.nodeId === "execute" || log.nodeType === "web3/write-contract"),
+  );
+  const hashes = new Map<string, Address>();
+  for (const log of writeLogs) {
+    const output = objectValue(log.outputRaw ?? log.output);
+    if (log.executionId === expectedExecutionId && log.nodeId === "execute" && log.nodeType === "web3/write-contract" && log.status === "success" && output?.success === true) {
+      for (const candidate of transactionHashesIn(log.outputRaw ?? log.output)) {
+        hashes.set(candidate.toLowerCase(), candidate);
+      }
+    }
+  }
+  if (hashes.size === 1) return { kind: "write", transactionHash: [...hashes.values()][0] };
+  if (hashes.size > 1) return { kind: "unknown" };
+  if (writeLogs.length > 0) return { kind: "unknown" };
+  if (parsed.data.logs.some((log) => transactionHashesIn(log.outputRaw ?? log.output).length > 0)) return { kind: "unknown" };
+
+  if (parsed.data.execution.status !== "success") return { kind: "unknown" };
+  const conditionLogs = parsed.data.logs.filter((log) => log.executionId === expectedExecutionId && log.nodeId === "eligible");
+  const conditionProvesFalseBranch = conditionLogs.length > 0 && conditionLogs.every((log) =>
+    log.executionId === expectedExecutionId &&
+    log.nodeId === "eligible" &&
+    log.nodeType === "Condition" &&
+    log.status === "success" &&
+    objectValue(log.outputRaw ?? log.output)?.condition === false,
+  );
+  const checkLogs = parsed.data.logs.filter((log) => log.executionId === expectedExecutionId && log.nodeId === "check");
+  const checkProvesFalse = checkLogs.length > 0 && checkLogs.every((log) =>
+    log.nodeType === "web3/read-contract" &&
+    log.status === "success" &&
+    objectValue(log.outputRaw ?? log.output)?.result === false,
+  );
+  return conditionProvesFalseBranch && checkProvesFalse ? { kind: "no_write" } : { kind: "unknown" };
 }
 
 export function classifyWorkflowEvidence(
@@ -188,24 +246,48 @@ export function classifyWorkflowEvidence(
     blockNumber?: bigint;
     gasUsed?: bigint;
     observedVaultStatus?: VaultStatus;
+    noWriteVerified?: boolean;
+    transactionHash?: Address;
   },
 ): KeeperHubEvidence {
   const execution = workflowExecutionSchema.parse(input);
-  const transaction = execution.transactionHashes.at(-1);
+  const multipleHashes = execution.transactionHashes.length > 1;
+  const transactionHash = reconciliation.transactionHash ?? (multipleHashes ? undefined : execution.transactionHashes.at(-1)?.hash as Address | undefined);
 
-  if (!transaction) {
-    const successfulCheck = execution.status === "success";
+  if (multipleHashes) {
+    return {
+      workflowId: execution.workflowId,
+      executionId: execution.id,
+      status: "unknown",
+      verified: false,
+      observedVaultStatus: "RECOVERY_REQUIRED",
+      timestamp: parseTimestamp(execution.completedAt ?? execution.startedAt),
+    };
+  }
+
+  if (!transactionHash) {
+    if (execution.status === "pending" || execution.status === "running" || execution.status === "phantom") {
+      return {
+        workflowId: execution.workflowId,
+        executionId: execution.id,
+        status: execution.status === "phantom" ? "pending" : execution.status,
+        verified: false,
+        observedVaultStatus: reconciliation.observedVaultStatus,
+        timestamp: parseTimestamp(execution.completedAt ?? execution.startedAt),
+      };
+    }
+    const successfulCheck = execution.status === "success" && reconciliation.noWriteVerified === true;
     return {
       workflowId: execution.workflowId,
       executionId: execution.id,
       status: successfulCheck
         ? "verified"
-        : execution.status === "pending" || execution.status === "running"
-          ? execution.status
+        : execution.status === "success" || execution.status === "unconfirmed"
+          ? "unknown"
           : "failed",
       verified: successfulCheck,
-      observedVaultStatus: reconciliation.observedVaultStatus,
-      outcome: "NO_WRITE",
+      observedVaultStatus: successfulCheck ? reconciliation.observedVaultStatus : "RECOVERY_REQUIRED",
+      ...(successfulCheck ? { outcome: "NO_WRITE" as const } : {}),
       timestamp: parseTimestamp(execution.completedAt ?? execution.startedAt),
     };
   }
@@ -221,7 +303,7 @@ export function classifyWorkflowEvidence(
     status: verified
       ? "verified"
       : "unknown",
-    transactionHash: transaction.hash as Address,
+    transactionHash,
     verified,
     receiptStatus: reconciliation.receiptStatus,
     blockNumber: reconciliation.blockNumber,
@@ -232,8 +314,20 @@ export function classifyWorkflowEvidence(
   };
 }
 
-function parseTimestamp(value?: string): bigint | undefined {
+function parseTimestamp(value?: string | null): bigint | undefined {
   if (!value) return undefined;
   const milliseconds = Date.parse(value);
   return Number.isFinite(milliseconds) ? BigInt(Math.floor(milliseconds / 1_000)) : undefined;
+}
+
+function objectValue(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+function transactionHashesIn(value: unknown, seen = new Set<object>()): Address[] {
+  if (typeof value === "string") return hashSchema.safeParse(value).success ? [value as Address] : [];
+  if (!value || typeof value !== "object" || seen.has(value)) return [];
+  seen.add(value);
+  return (Array.isArray(value) ? value : Object.values(value as Record<string, unknown>))
+    .flatMap((item) => transactionHashesIn(item, seen));
 }

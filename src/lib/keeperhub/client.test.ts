@@ -4,7 +4,9 @@ import {
   buildExecutionKey,
   classifyKeeperHubEvidence,
   classifyWorkflowEvidence,
+  inspectWorkflowExecutionLogs,
   parseEnabledChains,
+  parseWorkflowExecutions,
   selectExecutionChain,
   selectRequestedExecutionChain,
   verifyKeeperHubWriteLog,
@@ -45,6 +47,21 @@ describe("KeeperHub chain selection", () => {
 });
 
 describe("KeeperHub execution evidence", () => {
+  it("accepts every current KeeperHub execution status and nullable completion timestamps", () => {
+    const statuses = ["pending", "running", "unconfirmed", "success", "error", "cancelled", "phantom", "system_error"] as const;
+    const executions = parseWorkflowExecutions(statuses.map((status) => ({
+      id: `exec_${status}`,
+      workflowId: "wf_open",
+      status,
+      startedAt: "2026-08-12T12:00:00Z",
+      completedAt: null,
+      transactionHashes: [],
+    })));
+
+    expect(executions.map((execution) => execution.status)).toEqual(statuses);
+    expect(executions.every((execution) => execution.completedAt === null)).toBe(true);
+  });
+
   it("uses a stable key that changes with policy or action", () => {
     expect(buildExecutionKey(84532, vault, 3n, "finalizeSettlement", 900n)).toBe(
       buildExecutionKey(84532, vault, 3n, "finalizeSettlement", 900n),
@@ -173,7 +190,128 @@ describe("KeeperHub execution evidence", () => {
     expect(classifyWorkflowEvidence(
       { id: "exec_check", workflowId: "wf_open", status: "success", transactionHashes: [] },
       "PENDING",
-      { observedVaultStatus: "ACTIVE" },
+      { observedVaultStatus: "ACTIVE", noWriteVerified: true },
     )).toMatchObject({ status: "verified", verified: true, outcome: "NO_WRITE", observedVaultStatus: "ACTIVE" });
+  });
+
+  it("requires positive condition-log proof before classifying an empty-hash run as NO_WRITE", () => {
+    expect(classifyWorkflowEvidence(
+      { id: "exec_legacy", workflowId: "wf_open", status: "success", transactionHashes: [] },
+      "PENDING",
+      { observedVaultStatus: "ACTIVE" },
+    )).toMatchObject({ status: "unknown", verified: false, observedVaultStatus: "RECOVERY_REQUIRED" });
+
+    expect(inspectWorkflowExecutionLogs({
+      execution: { id: "exec_check", workflowId: "wf_open", status: "success" },
+      logs: [{
+        id: "log_check", executionId: "exec_check", nodeId: "check", nodeName: "Check eligibility", nodeType: "web3/read-contract", status: "success",
+        input: null, output: { result: false }, outputRaw: { result: false }, error: null, duration: "1", startedAt: "2026-08-12T12:00:00Z", completedAt: "2026-08-12T12:00:01Z",
+      }, {
+        id: "log_condition", executionId: "exec_check", nodeId: "eligible", nodeName: "Eligible onchain?", nodeType: "Condition", status: "success",
+        input: { condition: false }, output: { condition: false }, outputRaw: { condition: false }, error: null, duration: "1", startedAt: "2026-08-12T12:00:00Z", completedAt: "2026-08-12T12:00:01Z",
+      }],
+    }, "exec_check", "wf_open")).toEqual({ kind: "no_write" });
+  });
+
+  it("does not infer NO_WRITE from a false condition without the matching successful onchain read", () => {
+    expect(inspectWorkflowExecutionLogs({
+      execution: { id: "exec_check", workflowId: "wf_open", status: "success" },
+      logs: [{
+        id: "log_condition", executionId: "exec_check", nodeId: "eligible", nodeName: "Eligible onchain?", nodeType: "Condition", status: "success",
+        input: null, output: { condition: false }, outputRaw: { condition: false }, error: null, duration: "1", startedAt: "2026-08-12T12:00:00Z", completedAt: null,
+      }],
+    }, "exec_check", "wf_open")).toEqual({ kind: "unknown" });
+  });
+
+  it("does not infer NO_WRITE when any step output contains a transaction hash", () => {
+    expect(inspectWorkflowExecutionLogs({
+      execution: { id: "exec_check", workflowId: "wf_open", status: "success" },
+      logs: [{
+        id: "log_check", executionId: "exec_check", nodeId: "check", nodeName: "Check eligibility", nodeType: "web3/read-contract", status: "success",
+        input: null, output: { result: false, audit: { transactionHash: hash } }, outputRaw: null, error: null, duration: "1", startedAt: "2026-08-12T12:00:00Z", completedAt: null,
+      }, {
+        id: "log_condition", executionId: "exec_check", nodeId: "eligible", nodeName: "Eligible onchain?", nodeType: "Condition", status: "success",
+        input: null, output: { condition: false }, outputRaw: null, error: null, duration: "1", startedAt: "2026-08-12T12:00:00Z", completedAt: null,
+      }],
+    }, "exec_check", "wf_open")).toEqual({ kind: "unknown" });
+  });
+
+  it("reconstructs a legacy write hash from logs instead of declaring NO_WRITE", () => {
+    expect(inspectWorkflowExecutionLogs({
+      execution: { id: "exec_legacy", workflowId: "wf_open", status: "success" },
+      logs: [{
+        id: "log_write", executionId: "exec_legacy", nodeId: "execute", nodeName: "Open grace", nodeType: "web3/write-contract", status: "success",
+        input: {}, output: { success: true, transactionHash: hash }, error: null, duration: "1", startedAt: "2026-08-12T12:00:00Z", completedAt: "2026-08-12T12:00:01Z",
+      }],
+    }, "exec_legacy", "wf_open")).toEqual({ kind: "write", transactionHash: hash });
+  });
+
+  it("preserves unconfirmed empty-hash executions as ambiguous", () => {
+    expect(classifyWorkflowEvidence(
+      { id: "exec_unconfirmed", workflowId: "wf_open", status: "unconfirmed", completedAt: null, transactionHashes: [] },
+      "PENDING",
+      { noWriteVerified: false, observedVaultStatus: "ACTIVE" },
+    )).toMatchObject({ status: "unknown", verified: false, observedVaultStatus: "RECOVERY_REQUIRED" });
+  });
+
+  it("keeps phantom executions non-terminal and rejects multiple write hashes", () => {
+    expect(classifyWorkflowEvidence(
+      { id: "exec_phantom", workflowId: "wf_open", status: "phantom", transactionHashes: [] },
+      "PENDING",
+      { observedVaultStatus: "ACTIVE" },
+    )).toMatchObject({ status: "pending", verified: false });
+    expect(classifyWorkflowEvidence(
+      {
+        id: "exec_multi", workflowId: "wf_open", status: "success",
+        transactionHashes: [
+          { hash, nodeId: "execute", nodeName: "write" },
+          { hash: `0x${"b".repeat(64)}`, nodeId: "execute", nodeName: "write" },
+        ],
+      },
+      "PENDING",
+      { keeperWriteVerified: true, receiptStatus: "success", eventVerified: true, observedVaultStatus: "PENDING" },
+    )).toMatchObject({ status: "unknown", verified: false, observedVaultStatus: "RECOVERY_REQUIRED" });
+  });
+
+  it("does not prove no-write when condition attempts conflict", () => {
+    expect(inspectWorkflowExecutionLogs({
+      execution: { id: "exec_conflict", workflowId: "wf_open", status: "success" },
+      logs: [false, true].map((condition, index) => ({
+        id: `log_${index}`, executionId: "exec_conflict", nodeId: "eligible", nodeName: "Eligible onchain?", nodeType: "Condition", status: "success",
+        input: {}, output: { condition }, error: null, duration: "1", startedAt: "2026-08-12T12:00:00Z", completedAt: "2026-08-12T12:00:01Z",
+      })),
+    }, "exec_conflict", "wf_open")).toEqual({ kind: "unknown" });
+  });
+
+  it("does not trust a write log when the log response execution is not successful", () => {
+    expect(verifyKeeperHubWriteLog({
+      execution: { id: "exec_1", workflowId: "wf_1", status: "running" },
+      logs: [{
+        id: "log_1", executionId: "exec_1", nodeId: "execute", nodeName: "Open grace", nodeType: "web3/write-contract", status: "success",
+        input: null, output: { success: true, transactionHash: hash }, outputRaw: { success: true, transactionHash: hash }, error: null,
+        duration: "1", startedAt: "2026-08-12T12:00:00Z", completedAt: null,
+      }],
+    }, hash, "exec_1", "wf_1")).toBe(false);
+  });
+
+  it("does not fall back to the formatted output when a non-null raw output is malformed", () => {
+    expect(inspectWorkflowExecutionLogs({
+      execution: { id: "exec_check", workflowId: "wf_open", status: "success" },
+      logs: [{
+        id: "log_check", executionId: "exec_check", nodeId: "check", nodeName: "Check eligibility", nodeType: "web3/read-contract", status: "success",
+        input: null, output: { result: false }, outputRaw: "malformed", error: null, duration: "1", startedAt: "2026-08-12T12:00:00Z", completedAt: null,
+      }, {
+        id: "log_condition", executionId: "exec_check", nodeId: "eligible", nodeName: "Eligible onchain?", nodeType: "Condition", status: "success",
+        input: null, output: { condition: false }, outputRaw: "malformed", error: null, duration: "1", startedAt: "2026-08-12T12:00:00Z", completedAt: null,
+      }],
+    }, "exec_check", "wf_open")).toEqual({ kind: "unknown" });
+
+    expect(verifyKeeperHubWriteLog({
+      execution: { id: "exec_write", workflowId: "wf_open", status: "success" },
+      logs: [{
+        id: "log_write", executionId: "exec_write", nodeId: "execute", nodeName: "Open grace", nodeType: "web3/write-contract", status: "success",
+        input: null, output: { success: true, transactionHash: hash }, outputRaw: "malformed", error: null, duration: "1", startedAt: "2026-08-12T12:00:00Z", completedAt: null,
+      }],
+    }, hash, "exec_write", "wf_open")).toBe(false);
   });
 });

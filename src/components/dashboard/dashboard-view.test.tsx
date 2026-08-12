@@ -109,6 +109,20 @@ describe("DashboardView", () => {
     expect(screen.getByRole("heading", { name: /audit trail/i })).toBeInTheDocument();
   });
 
+  it("renders explicit verification failure for an invalid EOA address without synthesizing ACTIVE", () => {
+    render(<DashboardView {...baseProps} vaultResolution="invalid" />);
+    expect(screen.getByRole("heading", { name: /vault could not be verified/i })).toBeInTheDocument();
+    expect(screen.getByText(/not a factory-proven lastwish vault/i)).toBeInTheDocument();
+    expect(screen.queryByText(/^ACTIVE$/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /fund vault/i })).not.toBeInTheDocument();
+  });
+
+  it("renders a loading state without exposing vault actions before provenance succeeds", () => {
+    render(<DashboardView {...baseProps} vaultResolution="loading" />);
+    expect(screen.getByRole("heading", { name: /verifying vault provenance/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /fund vault/i })).not.toBeInTheDocument();
+  });
+
   it("shows guardian veto and beneficiary claim only in eligible roles and states", () => {
     const { rerender } = render(<DashboardView {...baseProps} role="guardian" status="PENDING" />);
     expect(screen.getByRole("button", { name: /veto settlement/i })).toBeInTheDocument();
@@ -140,7 +154,7 @@ describe("DashboardView", () => {
       }}
       evidenceCoverage={{
         scope: "recent_keeperhub_window_only",
-        workflows: [{ workflowId: "wf_open", name: "Open", policyVersion: "3", action: "open", enabled: false, registrationState: "current", coverage: { runsReturned: 50, providerWindow: "latest_50_non_purged", olderRunsMayExist: true, providerPagination: "unavailable" } }],
+        workflows: [{ workflowId: "wf_open", name: "Open", policyVersion: "3", action: "open", enabled: false, definitionMatches: true, registrationState: "current", coverage: { runsReturned: 50, providerWindow: "latest_50_non_purged", olderRunsMayExist: true, providerPagination: "unavailable" } }],
       }} />);
     expect(screen.getByRole("button", { name: /register keeperhub/i })).toBeInTheDocument();
     expect(screen.getByText(/automation requires recovery/i)).toBeInTheDocument();

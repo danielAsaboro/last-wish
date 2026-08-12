@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import * as workflowModule from "./workflow";
-import { buildVaultWorkflows, findObsoleteVaultWorkflows, findWorkflowByRegistrationKey, findWorkflowsByRegistrationKey, isWorkflowForVault, selectCanonicalWorkflow } from "./workflow";
+import { buildVaultWorkflows, buildWorkflowCreateIdempotencyKey, findObsoleteVaultWorkflows, findWorkflowByRegistrationKey, findWorkflowsByRegistrationKey, isWorkflowForVault, selectCanonicalWorkflow, workflowGraphMatchesDefinition } from "./workflow";
 
 describe("buildVaultWorkflows", () => {
   it("builds scheduled read-condition-write workflows for both settlement stages", () => {
@@ -57,8 +57,8 @@ describe("buildVaultWorkflows", () => {
       policyVersion: 3n,
     })[0];
     expect(findWorkflowByRegistrationKey([
-      { id: "wf_old", name: definition.name, description: definition.description.replace(":3:open", ":2:open") },
-      { id: "wf_current", name: definition.name, description: definition.description },
+      { id: "wf_old", name: definition.name, description: definition.description.replace(":3:open", ":2:open"), deletedAt: null, deactivatedAt: null },
+      { id: "wf_current", name: definition.name, description: definition.description, deletedAt: null, deactivatedAt: null },
     ], definition)).toMatchObject({ id: "wf_current" });
   });
 
@@ -102,11 +102,11 @@ describe("buildVaultWorkflows", () => {
     })[0];
     const suffixed = `${definition.description}:tampered`;
     const prefixOnly = definition.description.replace(":3:open", ":3");
-    expect(findWorkflowByRegistrationKey([{ id: "wf_suffix", description: suffixed }], definition)).toBeUndefined();
-    expect(findWorkflowsByRegistrationKey([{ id: "wf_prefix", description: prefixOnly }], definition)).toEqual([]);
+    expect(findWorkflowByRegistrationKey([{ id: "wf_suffix", description: suffixed, deletedAt: null, deactivatedAt: null }], definition)).toBeUndefined();
+    expect(findWorkflowsByRegistrationKey([{ id: "wf_prefix", description: prefixOnly, deletedAt: null, deactivatedAt: null }], definition)).toEqual([]);
     expect(isWorkflowForVault({ description: suffixed }, 84532, "0x1111111111111111111111111111111111111111")).toBe(false);
     expect(findObsoleteVaultWorkflows(
-      [{ id: "wf_suffix", description: suffixed }, { id: "wf_prefix", description: prefixOnly }],
+      [{ id: "wf_suffix", description: suffixed, deletedAt: null, deactivatedAt: null }, { id: "wf_prefix", description: prefixOnly, deletedAt: null, deactivatedAt: null }],
       84532,
       "0x1111111111111111111111111111111111111111",
       [definition],
@@ -122,10 +122,10 @@ describe("buildVaultWorkflows", () => {
     });
     const oldDescription = current[0].description.replace(":3:open", ":2:open");
     expect(findObsoleteVaultWorkflows([
-      { id: "wf_old", description: oldDescription },
-      { id: "wf_current", description: current[0].description },
-      { id: "wf_other_vault", description: current[0].description.replace(/0x1{40}/, `0x${"2".repeat(40)}`) },
-    ], 84532, "0x1111111111111111111111111111111111111111", current)).toEqual([{ id: "wf_old", description: oldDescription }]);
+      { id: "wf_old", description: oldDescription, deletedAt: null, deactivatedAt: null },
+      { id: "wf_current", description: current[0].description, deletedAt: null, deactivatedAt: null },
+      { id: "wf_other_vault", description: current[0].description.replace(/0x1{40}/, `0x${"2".repeat(40)}`), deletedAt: null, deactivatedAt: null },
+    ], 84532, "0x1111111111111111111111111111111111111111", current)).toEqual([{ id: "wf_old", description: oldDescription, deletedAt: null, deactivatedAt: null }]);
   });
 
   it("selects one deterministic canonical copy when registration was replayed", () => {
@@ -136,9 +136,95 @@ describe("buildVaultWorkflows", () => {
       policyVersion: 3n,
     })[0];
     const copies = findWorkflowsByRegistrationKey([
-      { id: "wf_b", description: definition.description, createdAt: "2026-08-12T12:00:01Z" },
-      { id: "wf_a", description: definition.description, createdAt: "2026-08-12T12:00:00Z" },
+      { id: "wf_b", description: definition.description, createdAt: "2026-08-12T12:00:01Z", deletedAt: null, deactivatedAt: null },
+      { id: "wf_a", description: definition.description, createdAt: "2026-08-12T12:00:00Z", deletedAt: null, deactivatedAt: null },
     ], definition);
     expect(selectCanonicalWorkflow(copies)?.id).toBe("wf_a");
+  });
+
+  it("excludes deleted and deactivated registrations from canonical selection", () => {
+    const definition = buildVaultWorkflows({
+      chainId: 84532,
+      vault: "0x1111111111111111111111111111111111111111",
+      scheduleCron: "*/5 * * * *",
+      policyVersion: 3n,
+    })[0];
+    const rows = [
+      { id: "wf_deleted", description: definition.description, createdAt: "2026-08-12T11:00:00Z", deletedAt: "2026-08-12T12:00:00Z" },
+      { id: "wf_deactivated", description: definition.description, createdAt: "2026-08-12T11:01:00Z", deactivatedAt: "2026-08-12T12:00:00Z" },
+      { id: "wf_malformed", description: definition.description, createdAt: "2026-08-12T11:01:30Z" },
+      { id: "wf_live", description: definition.description, createdAt: "2026-08-12T11:02:00Z", deletedAt: null, deactivatedAt: null },
+    ];
+    expect(findWorkflowsByRegistrationKey(rows, definition).map((row) => row.id)).toEqual(["wf_live"]);
+    expect(selectCanonicalWorkflow(rows)?.id).toBe("wf_live");
+  });
+
+  it("compares the normalized canonical graph rather than trusting its registration description", () => {
+    const definition = buildVaultWorkflows({
+      chainId: 84532,
+      vault: "0x1111111111111111111111111111111111111111",
+      scheduleCron: "*/5 * * * *",
+      policyVersion: 3n,
+    })[0];
+    const withMetadata = { ...definition, id: "wf_open", createdAt: "now" };
+    expect(workflowGraphMatchesDefinition(withMetadata, definition)).toBe(true);
+    const tampered = structuredClone(definition);
+    tampered.nodes[3].data.config.contractAddress = "0x2222222222222222222222222222222222222222";
+    const tamperedWithMetadata = { ...tampered, id: "wf_tampered" };
+    expect(workflowGraphMatchesDefinition(tamperedWithMetadata, definition)).toBe(false);
+    const wrongBranch = structuredClone(definition);
+    delete wrongBranch.edges[2].sourceHandle;
+    const wrongBranchWithMetadata = { ...wrongBranch, id: "wf_branch" };
+    expect(workflowGraphMatchesDefinition(wrongBranchWithMetadata, definition)).toBe(false);
+
+    const sanitized = structuredClone(definition);
+    for (const node of sanitized.nodes) {
+      (node as typeof node & { position: { x: number; y: number } }).position = { x: 0, y: 0 };
+      node.data.status = "idle";
+    }
+    expect(workflowGraphMatchesDefinition(sanitized, definition)).toBe(true);
+
+    const mutations = [
+      (candidate: typeof definition) => { candidate.nodes[3].data.config.abiFunction = "finalizeSettlementForPolicy"; },
+      (candidate: typeof definition) => { candidate.nodes[1].data.config.functionArgs = '["4"]'; },
+      (candidate: typeof definition) => { candidate.nodes[2].data.config.condition = "true"; },
+      (candidate: typeof definition) => { candidate.nodes[0].data.config.scheduleCron = "*/10 * * * *"; },
+      (candidate: typeof definition) => { candidate.nodes[3].data.enabled = false; },
+      (candidate: typeof definition) => { candidate.nodes[3].data.status = "unexpected"; },
+      (candidate: typeof definition) => { candidate.edges[2].targetHandle = "unexpected"; },
+      (candidate: typeof definition) => { candidate.edges[0].data = { mode: "changed" }; },
+      (candidate: typeof definition) => { candidate.edges.pop(); },
+      (candidate: typeof definition) => { candidate.nodes.push({ ...structuredClone(candidate.nodes[3]), id: "extra" }); },
+    ];
+    for (const mutate of mutations) {
+      const candidate = structuredClone(definition);
+      mutate(candidate);
+      expect(workflowGraphMatchesDefinition(candidate, definition)).toBe(false);
+    }
+  });
+
+  it("treats EVM contract-address casing as semantic equality", () => {
+    const definition = buildVaultWorkflows({ chainId: 84532, vault: "0x52908400098527886E0F7030069857D2E4169EE7", scheduleCron: "*/5 * * * *", policyVersion: 3n })[0];
+    const lowercase = structuredClone(definition);
+    for (const node of lowercase.nodes) {
+      if (typeof node.data.config.contractAddress === "string") node.data.config.contractAddress = node.data.config.contractAddress.toLowerCase();
+    }
+    expect(workflowGraphMatchesDefinition(lowercase, definition)).toBe(true);
+  });
+
+  it("uses a stable definition-scoped create key and rotates it after a tombstoned candidate", () => {
+    const definition = buildVaultWorkflows({
+      chainId: 84532,
+      vault: "0x1111111111111111111111111111111111111111",
+      scheduleCron: "*/5 * * * *",
+      policyVersion: 3n,
+    })[0];
+    expect(buildWorkflowCreateIdempotencyKey(definition, [])).toBe(buildWorkflowCreateIdempotencyKey(definition, []));
+    expect(buildWorkflowCreateIdempotencyKey(definition, ["wf_b", "wf_a"])).toBe(buildWorkflowCreateIdempotencyKey(definition, ["wf_a", "wf_b"]));
+    expect(buildWorkflowCreateIdempotencyKey(definition, ["wf_deleted"])).not.toBe(buildWorkflowCreateIdempotencyKey(definition, []));
+    const finalize = buildVaultWorkflows({ chainId: 84532, vault: "0x1111111111111111111111111111111111111111", scheduleCron: "*/5 * * * *", policyVersion: 3n })[1];
+    const nextPolicy = buildVaultWorkflows({ chainId: 84532, vault: "0x1111111111111111111111111111111111111111", scheduleCron: "*/5 * * * *", policyVersion: 4n })[0];
+    expect(buildWorkflowCreateIdempotencyKey(finalize, [])).not.toBe(buildWorkflowCreateIdempotencyKey(definition, []));
+    expect(buildWorkflowCreateIdempotencyKey(nextPolicy, [])).not.toBe(buildWorkflowCreateIdempotencyKey(definition, []));
   });
 });

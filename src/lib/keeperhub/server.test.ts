@@ -6,18 +6,47 @@ describe("KeeperHubClient", () => {
   it("creates workflows through the documented endpoint and unwraps API data", async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ data: { id: "wf_123", name: "LastWish" } }));
     const client = new KeeperHubClient({ apiKey: "kh_secret", fetcher });
-    await expect(client.createWorkflow({ name: "LastWish", description: "policy", enabled: false, nodes: [], edges: [] })).resolves.toEqual({ id: "wf_123", name: "LastWish" });
+    await expect(client.createWorkflow({ name: "LastWish", description: "policy", enabled: false, nodes: [], edges: [] }, "lastwish-create-123")).resolves.toEqual({ id: "wf_123", name: "LastWish" });
     expect(fetcher).toHaveBeenCalledWith(
       "https://app.keeperhub.com/api/workflows/create",
-      expect.objectContaining({ method: "POST" }),
+      expect.objectContaining({ method: "POST", headers: expect.objectContaining({ "Idempotency-Key": "lastwish-create-123" }) }),
     );
   });
 
   it("lists organization workflows for idempotent registration", async () => {
-    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ data: [{ id: "wf_123", name: "LastWish", description: "lastwish:key", enabled: false }] }));
+    const nodes = [{ id: "schedule", type: "trigger", data: { type: "trigger", label: "Schedule", config: {} } }];
+    const edges = [{ id: "schedule-check", source: "schedule", target: "check" }];
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ data: [{
+      id: "wf_123", name: "LastWish", description: "lastwish:key", enabled: false, nodes, edges,
+      createdAt: "2026-08-12T11:00:00Z", deletedAt: null, deactivatedAt: "2026-08-12T12:00:00Z",
+    }] }));
     const client = new KeeperHubClient({ apiKey: "kh_secret", fetcher });
-    await expect(client.listWorkflows()).resolves.toEqual([{ id: "wf_123", name: "LastWish", description: "lastwish:key", enabled: false }]);
+    await expect(client.listWorkflows()).resolves.toEqual([{
+      id: "wf_123", name: "LastWish", description: "lastwish:key", enabled: false, nodes, edges,
+      createdAt: "2026-08-12T11:00:00Z", deletedAt: null, deactivatedAt: "2026-08-12T12:00:00Z",
+    }]);
     expect(fetcher).toHaveBeenCalledWith("https://app.keeperhub.com/api/workflows", expect.any(Object));
+  });
+
+  it("accepts the provider's nullable description without dropping an unrelated workflow row", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ data: [{
+      id: "wf_unrelated", name: "Untitled", description: null, createdAt: "2026-08-12T12:00:00Z",
+      enabled: false, nodes: [], edges: [], deletedAt: null, deactivatedAt: null,
+    }] }));
+    const client = new KeeperHubClient({ apiKey: "kh_secret", fetcher });
+    await expect(client.listWorkflows()).resolves.toEqual([{
+      id: "wf_unrelated", name: "Untitled", description: undefined, createdAt: "2026-08-12T12:00:00Z",
+      enabled: false, nodes: [], edges: [], deletedAt: null, deactivatedAt: null,
+    }]);
+  });
+
+  it("fails closed when any workflow row omits provider lifecycle or graph fields", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ data: [
+      { id: "wf_valid", name: "Valid", description: null, createdAt: "2026-08-12T12:00:00Z", enabled: false, nodes: [], edges: [], deletedAt: null, deactivatedAt: null },
+      { id: "wf_malformed", name: "Malformed", description: null, createdAt: "2026-08-12T12:00:00Z", enabled: false, nodes: [], edges: [] },
+    ] }));
+    const client = new KeeperHubClient({ apiKey: "kh_secret", fetcher });
+    await expect(client.listWorkflows()).rejects.toThrow(/invalid workflow list/i);
   });
 
   it("lists the safe organization integration summary needed for a wallet readiness preflight", async () => {
@@ -49,11 +78,17 @@ describe("KeeperHubClient", () => {
 
   it("requires KeeperHub's explicit workflow simulation success envelope", async () => {
     const fetcher = vi.fn<typeof fetch>()
-      .mockResolvedValueOnce(Response.json({ ok: true, result: { simulatedNodeCount: 4, skippedNodeCount: 1 } }))
+      .mockResolvedValueOnce(Response.json({ ok: true, result: { simulatedNodeCount: 1, skippedNodeCount: 0 } }))
       .mockResolvedValueOnce(Response.json({ ok: false, error: "SIMULATION_UNAVAILABLE" }));
     const client = new KeeperHubClient({ apiKey: "kh_secret", fetcher });
-    await expect(client.simulateWorkflow("wf_123")).resolves.toEqual({ simulatedNodeCount: 4, skippedNodeCount: 1 });
+    await expect(client.simulateWorkflow("wf_123")).resolves.toEqual({ warnings: [], simulatedNodeCount: 1, skippedNodeCount: 0 });
     await expect(client.simulateWorkflow("wf_123")).rejects.toThrow(/simulation unavailable/i);
+  });
+
+  it("rejects malformed advisory simulation results instead of treating them as a pass", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ ok: true, result: { simulatedNodeCount: "one", skippedNodeCount: 0 } }));
+    const client = new KeeperHubClient({ apiKey: "kh_secret", fetcher });
+    await expect(client.simulateWorkflow("wf_bad")).rejects.toThrow(/invalid workflow simulation/i);
   });
 
 

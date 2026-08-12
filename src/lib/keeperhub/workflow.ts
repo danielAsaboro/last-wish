@@ -1,4 +1,4 @@
-import { getAddress } from "viem";
+import { getAddress, keccak256, stringToHex } from "viem";
 import { z } from "zod";
 
 import type { Address } from "@/lib/succession/types";
@@ -42,18 +42,27 @@ const eligibilityAbi = JSON.stringify([
 ]);
 
 type WorkflowAction = "open" | "finalize";
-type Node = {
+export type KeeperHubWorkflowNode = {
   id: string;
   type: "trigger" | "action";
-  data: { type: "trigger" | "action"; label: string; config: Record<string, string> };
+  data: { type: "trigger" | "action"; label: string; enabled?: boolean; status?: string; config: Record<string, string> };
 };
 
 export type KeeperHubWorkflowDefinition = {
   name: string;
   description: string;
   enabled: boolean;
-  nodes: Node[];
-  edges: Array<{ id: string; source: string; target: string; sourceHandle?: string }>;
+  nodes: KeeperHubWorkflowNode[];
+  edges: Array<{ id: string; source: string; target: string; sourceHandle?: string; targetHandle?: string; data?: unknown }>;
+};
+
+export type KeeperHubWorkflowLifecycle = {
+  deletedAt: string | null;
+  deactivatedAt: string | null;
+};
+
+type WorkflowWithRegistration = Partial<KeeperHubWorkflowLifecycle> & {
+  description?: string;
 };
 
 export type WorkflowRegistrationKey = {
@@ -76,15 +85,23 @@ export function parseWorkflowRegistrationKey(description?: string): WorkflowRegi
   };
 }
 
-export function findWorkflowByRegistrationKey<T extends { description?: string }>(
+export function findWorkflowByRegistrationKey<T extends WorkflowWithRegistration>(
   workflows: T[],
   definition: KeeperHubWorkflowDefinition,
 ): T | undefined {
   const key = parseWorkflowRegistrationKey(definition.description);
-  return key ? workflows.find((workflow) => registrationKeysMatch(parseWorkflowRegistrationKey(workflow.description), key)) : undefined;
+  return key ? workflows.find((workflow) => isLiveWorkflow(workflow) && registrationKeysMatch(parseWorkflowRegistrationKey(workflow.description), key)) : undefined;
 }
 
-export function findWorkflowsByRegistrationKey<T extends { description?: string }>(
+export function findWorkflowsByRegistrationKey<T extends WorkflowWithRegistration>(
+  workflows: T[],
+  definition: KeeperHubWorkflowDefinition,
+): T[] {
+  const key = parseWorkflowRegistrationKey(definition.description);
+  return key ? workflows.filter((workflow) => isLiveWorkflow(workflow) && registrationKeysMatch(parseWorkflowRegistrationKey(workflow.description), key)) : [];
+}
+
+export function findAllWorkflowsByRegistrationKey<T extends { description?: string }>(
   workflows: T[],
   definition: KeeperHubWorkflowDefinition,
 ): T[] {
@@ -92,10 +109,14 @@ export function findWorkflowsByRegistrationKey<T extends { description?: string 
   return key ? workflows.filter((workflow) => registrationKeysMatch(parseWorkflowRegistrationKey(workflow.description), key)) : [];
 }
 
-export function selectCanonicalWorkflow<T extends { id: string; createdAt?: string }>(workflows: T[]): T | undefined {
-  return [...workflows].sort((left, right) =>
+export function selectCanonicalWorkflow<T extends { id: string; createdAt?: string } & Partial<KeeperHubWorkflowLifecycle>>(workflows: T[]): T | undefined {
+  return workflows.filter(isLiveWorkflow).sort((left, right) =>
     (left.createdAt ?? "9999").localeCompare(right.createdAt ?? "9999") || left.id.localeCompare(right.id),
   )[0];
+}
+
+export function isLiveWorkflow(workflow: Partial<KeeperHubWorkflowLifecycle>): boolean {
+  return workflow.deletedAt === null && workflow.deactivatedAt === null;
 }
 
 export function isWorkflowForVault(
@@ -107,7 +128,7 @@ export function isWorkflowForVault(
   return key?.chainId === chainId && key.vault.toLowerCase() === vault.toLowerCase();
 }
 
-export function findObsoleteVaultWorkflows<T extends { description?: string }>(
+export function findObsoleteVaultWorkflows<T extends WorkflowWithRegistration>(
   workflows: T[],
   chainId: number,
   vault: Address,
@@ -118,9 +139,29 @@ export function findObsoleteVaultWorkflows<T extends { description?: string }>(
     return key ? [serializeRegistrationKey(key)] : [];
   }));
   return workflows.filter((workflow) =>
+    isLiveWorkflow(workflow) &&
     isWorkflowForVault(workflow, chainId, vault) &&
     !currentKeys.has(serializeRegistrationKey(parseWorkflowRegistrationKey(workflow.description)!)),
   );
+}
+
+export function workflowGraphMatchesDefinition(
+  workflow: { nodes?: unknown; edges?: unknown },
+  definition: KeeperHubWorkflowDefinition,
+): boolean {
+  const actual = normalizedWorkflowGraph(workflow);
+  return actual !== undefined && actual === normalizedWorkflowGraph(definition);
+}
+
+export function buildWorkflowCreateIdempotencyKey(
+  definition: KeeperHubWorkflowDefinition,
+  inactiveCandidateIds: string[],
+): string {
+  const requestScope = stableStringify({
+    definition: { ...definition, enabled: false },
+    inactiveCandidateIds: [...inactiveCandidateIds].sort(),
+  });
+  return `lastwish-workflow-${keccak256(stringToHex(requestScope)).slice(2)}`;
 }
 
 export function buildVaultWorkflows(rawInput: {
@@ -226,4 +267,58 @@ function registrationKeysMatch(
 
 function serializeRegistrationKey(key: WorkflowRegistrationKey): string {
   return `${key.chainId}:${key.vault.toLowerCase()}:${key.policyVersion}:${key.action}`;
+}
+
+function normalizedWorkflowGraph(workflow: { nodes?: unknown; edges?: unknown }): string | undefined {
+  if (!Array.isArray(workflow.nodes) || !Array.isArray(workflow.edges)) return undefined;
+  const nodes = workflow.nodes.flatMap((value) => {
+    if (!value || typeof value !== "object") return [];
+    const node = value as Record<string, unknown>;
+    const data = node.data;
+    if (typeof node.id !== "string" || typeof node.type !== "string" || !data || typeof data !== "object") return [];
+    const nodeData = data as Record<string, unknown>;
+    if (typeof nodeData.type !== "string" || typeof nodeData.label !== "string" || !nodeData.config || typeof nodeData.config !== "object") return [];
+    return [{
+      id: node.id,
+      type: node.type,
+      data: {
+        type: nodeData.type,
+        label: nodeData.label,
+        enabled: nodeData.enabled !== false,
+        ...(nodeData.status === undefined || nodeData.status === "idle" ? {} : { status: normalizeValue(nodeData.status) }),
+        config: normalizeValue(nodeData.config),
+      },
+    }];
+  }).sort((left, right) => left.id.localeCompare(right.id));
+  const edges = workflow.edges.flatMap((value) => {
+    if (!value || typeof value !== "object") return [];
+    const edge = value as Record<string, unknown>;
+    if (typeof edge.id !== "string" || typeof edge.source !== "string" || typeof edge.target !== "string") return [];
+    return [{
+      id: edge.id,
+      source: edge.source,
+      target: edge.target,
+      sourceHandle: typeof edge.sourceHandle === "string" ? edge.sourceHandle : null,
+      targetHandle: typeof edge.targetHandle === "string" ? edge.targetHandle : null,
+      data: edge.data === undefined ? null : normalizeValue(edge.data),
+    }];
+  }).sort((left, right) => left.id.localeCompare(right.id));
+  if (nodes.length !== workflow.nodes.length || edges.length !== workflow.edges.length) return undefined;
+  return stableStringify({ nodes, edges });
+}
+
+function normalizeValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(normalizeValue);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+    .filter(([, item]) => item !== undefined)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, item]) => [
+      key,
+      key === "contractAddress" && typeof item === "string" ? item.toLowerCase() : normalizeValue(item),
+    ]));
+}
+
+function stableStringify(value: unknown): string {
+  return JSON.stringify(normalizeValue(value));
 }

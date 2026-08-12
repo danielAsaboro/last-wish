@@ -16,6 +16,7 @@ vi.mock("viem", async (importOriginal) => {
 });
 
 import { POST } from "./route";
+import { buildVaultWorkflows } from "@/lib/keeperhub/workflow";
 
 describe("POST /api/keeperhub/workflows", () => {
   beforeEach(() => {
@@ -82,9 +83,19 @@ describe("POST /api/keeperhub/workflows", () => {
       { chainId: 11155111, name: "Sepolia", isEnabled: true, isTestnet: true },
     ]);
     keeperHub.listWorkflows.mockResolvedValue([]);
-    keeperHub.createWorkflow.mockResolvedValueOnce({ id: "wf_open" }).mockResolvedValueOnce({ id: "wf_finalize" });
-    keeperHub.updateWorkflow.mockResolvedValue({});
-    keeperHub.simulateWorkflow.mockResolvedValue({ success: true });
+    const rows: Array<Record<string, unknown>> = [];
+    keeperHub.createWorkflow.mockImplementation(async (definition) => {
+      const id = definition.description.endsWith(":open") ? "wf_open" : "wf_finalize";
+      rows.push({ id, ...structuredClone(definition), enabled: false, deletedAt: null, deactivatedAt: null });
+      return { id };
+    });
+    keeperHub.listWorkflows.mockImplementation(async () => structuredClone(rows));
+    keeperHub.updateWorkflow.mockImplementation(async (id, patch) => {
+      const index = rows.findIndex((row) => row.id === id);
+      rows[index] = { ...rows[index], ...structuredClone(patch) };
+      return {};
+    });
+    keeperHub.simulateWorkflow.mockResolvedValue({ warnings: [], simulatedNodeCount: 1, skippedNodeCount: 0 });
 
     const response = await POST(new Request("http://localhost/api/keeperhub/workflows", {
       method: "POST",
@@ -101,5 +112,61 @@ describe("POST /api/keeperhub/workflows", () => {
 
     expect(response.status).toBe(201);
     await expect(response.json()).resolves.toMatchObject({ chain: { chainId: 11155111 } });
+  });
+
+  it("does not activate either workflow when a source-shaped simulation reports an unavailable signer", async () => {
+    process.env.KEEPERHUB_API_KEY = "kh_test";
+    process.env.NEXT_PUBLIC_LASTWISH_FACTORY_ADDRESS = "0x1111111111111111111111111111111111111111";
+    const vault = "0x2222222222222222222222222222222222222222";
+    const owner = "0x3333333333333333333333333333333333333333";
+    const definitions = buildVaultWorkflows({ chainId: 84532, vault, scheduleCron: "*/5 * * * *", policyVersion: 1n });
+    const rows = definitions.map((definition, index) => ({
+      id: index === 0 ? "wf_open" : "wf_finalize",
+      ...structuredClone(definition),
+      enabled: false,
+      createdAt: `2026-08-12T12:00:0${index}Z`,
+      deletedAt: null,
+      deactivatedAt: null,
+    }));
+    rpc.readContract.mockResolvedValueOnce(owner).mockResolvedValueOnce(1n).mockResolvedValueOnce(vault);
+    keeperHub.getChains.mockResolvedValue([{ chainId: 84532, name: "Base Sepolia", isEnabled: true, isTestnet: true }]);
+    keeperHub.listWorkflows.mockResolvedValue(rows);
+    keeperHub.updateWorkflow.mockImplementation(async (id, patch) => {
+      const index = rows.findIndex((row) => row.id === id);
+      rows[index] = { ...rows[index], ...structuredClone(patch) };
+      return {};
+    });
+    keeperHub.simulateWorkflow.mockResolvedValue({
+      warnings: [{
+        code: "SIMULATION_SIGNER_UNAVAILABLE",
+        message: "Open grace period could not resolve its signer for simulation.",
+        parameterPath: "nodes[3].data.config.web3Connection",
+        nodeId: "execute",
+        fieldKey: "web3Connection",
+      }],
+      simulatedNodeCount: 0,
+      skippedNodeCount: 1,
+    });
+
+    const response = await POST(new Request("http://localhost/api/keeperhub/workflows", {
+      method: "POST",
+      body: JSON.stringify({
+        chainId: 84532,
+        vault,
+        scheduleCron: "*/5 * * * *",
+        policyVersion: "1",
+        expiresAt: Math.floor(Date.now() / 1_000) + 300,
+        signer: owner,
+        signature: `0x${"a".repeat(130)}`,
+      }),
+    }));
+
+    expect(response.status).toBe(502);
+    await expect(response.json()).resolves.toMatchObject({
+      recoveryRequired: true,
+      mutationJournal: expect.arrayContaining([expect.objectContaining({ workflowId: "wf_open" })]),
+      observedWorkflows: expect.arrayContaining([expect.objectContaining({ workflowId: "wf_open", enabled: false })]),
+    });
+    expect(keeperHub.updateWorkflow).not.toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ enabled: true }));
   });
 });
