@@ -19,6 +19,7 @@ import {
 } from "wagmi";
 
 import { buildChainAuditEvents } from "@/lib/audit/chain-events";
+import { readEventHistoryInWindows } from "@/lib/audit/event-indexer";
 import { buildAuditTimeline, type ChainAuditEvent } from "@/lib/audit/timeline";
 import { factoryAbi, vaultAbi } from "@/lib/contracts/abi";
 import { AbortableRequestGeneration, isVerifiedVaultActionTarget, shouldApplyEvidenceResponse, shouldApplyVaultBlock } from "@/lib/dashboard/async-guards";
@@ -37,6 +38,7 @@ import { assertSuccessfulReceipt } from "@/lib/wallet/transaction";
 import {
   DashboardView,
   type DashboardAction,
+  type AuditIndexCoverage,
   type DashboardRole,
   type WalletTransactionProgress,
 } from "./dashboard-view";
@@ -61,6 +63,8 @@ type LoadedVault = {
 };
 
 type Notice = { tone: "success" | "warning" | "danger"; text: string };
+type RawVaultLog = Parameters<typeof buildChainAuditEvents>[0][number];
+type AuditHistoryCacheEntry = { deployedAtBlock: bigint; indexedThroughBlock: bigint; logs: RawVaultLog[] };
 type EvidenceRefresh = { state: "checking" | "refreshing" | "fresh" | "stale"; detail?: string };
 type VaultResolution = { state: "empty" } | { state: "loading" | "ready" | "invalid" | "unavailable"; target: Address; detail?: string };
 type VaultComposerKind = "fund" | "withdraw" | "update-policy";
@@ -74,6 +78,7 @@ type VaultComposer = {
 type ValueComposerSession = Omit<VaultComposer, "kind"> & { kind: "fund" | "withdraw" };
 const factoryAddress = process.env.NEXT_PUBLIC_LASTWISH_FACTORY_ADDRESS;
 const statusNames: VaultStatus[] = ["ACTIVE", "PENDING", "VETOED", "READY", "SETTLED"];
+const auditIndexingUnavailableCopy = "Chain audit indexing is temporarily unavailable. The last complete event range remains visible.";
 
 export function DashboardApp() {
   const { address: account, chainId, isConnected } = useAccount();
@@ -85,6 +90,7 @@ export function DashboardApp() {
   const [vault, setVault] = useState<LoadedVault>();
   const [vaultResolution, setVaultResolution] = useState<VaultResolution>({ state: "empty" });
   const [auditEvents, setAuditEvents] = useState<ChainAuditEvent[]>([]);
+  const [auditIndexCoverage, setAuditIndexCoverage] = useState<AuditIndexCoverage>({ state: "idle" });
   const [keeperEvidence, setKeeperEvidence] = useState<KeeperHubEvidence[]>([]);
   const [discoveredWorkflows, setDiscoveredWorkflows] = useState<DiscoveredWorkflowRegistration[]>([]);
   const [executionEvidenceScope, setExecutionEvidenceScope] = useState<"recent_keeperhub_window_only">("recent_keeperhub_window_only");
@@ -97,6 +103,7 @@ export function DashboardApp() {
   const [notice, setNotice] = useState<Notice | null>(null);
   const [transactionProgress, setTransactionProgress] = useState<WalletTransactionProgress>();
   const blockTimestampCache = useRef(new Map<bigint, bigint>());
+  const auditHistoryCache = useRef(new Map<string, AuditHistoryCacheEntry>());
   const activeVaultRef = useRef<Address | undefined>(undefined);
   const vaultRef = useRef<LoadedVault | undefined>(undefined);
   const vaultRequestGuard = useRef(new AbortableRequestGeneration());
@@ -142,6 +149,7 @@ export function DashboardApp() {
     vaultRef.current = undefined;
     setVaultResolution({ state: "loading", target: address });
     setAuditEvents([]);
+    setAuditIndexCoverage({ state: "idle" });
     setComposer(null);
     setNotice(null);
     resetAutomationEvidence();
@@ -246,18 +254,50 @@ export function DashboardApp() {
       setVaultResolution({ state: "ready", target: requestedVault });
       window.localStorage.setItem(`lastwish:vault:${preferredChain.id}`, requestedVault);
 
+      const auditCacheKey = `${preferredChain.id}:${requestedVault.toLowerCase()}`;
+      const cachedHistory = auditHistoryCache.current.get(auditCacheKey);
+      const reusableHistory = cachedHistory?.deployedAtBlock === deployedAtBlock && cachedHistory.indexedThroughBlock <= blockNumber
+        ? cachedHistory
+        : undefined;
+      setAuditIndexCoverage({
+        state: "indexing",
+        targetBlock: blockNumber,
+        ...(reusableHistory ? { lastCompleteBlock: reusableHistory.indexedThroughBlock } : {}),
+      });
       try {
-        const logs = await publicClient.getContractEvents({ address: requestedVault, abi: vaultAbi, fromBlock: deployedAtBlock, toBlock: blockNumber });
-        const blockNumbers = [...new Set(logs.map((log) => log.blockNumber).filter((block): block is bigint => block !== null))];
+        const fromBlock = reusableHistory ? reusableHistory.indexedThroughBlock + 1n : deployedAtBlock;
+        const newLogs = await readEventHistoryInWindows<RawVaultLog>({
+          fromBlock,
+          toBlock: blockNumber,
+          readRange: (rangeStart, rangeEnd) => publicClient.getContractEvents({
+            address: requestedVault,
+            abi: vaultAbi,
+            fromBlock: rangeStart,
+            toBlock: rangeEnd,
+          }),
+        });
+        const candidateLogs = [...(reusableHistory?.logs ?? []), ...newLogs];
+        const candidateTimestamps = new Map(blockTimestampCache.current);
+        const blockNumbers = [...new Set(candidateLogs.map((log) => log.blockNumber).filter((block): block is bigint => block !== null && block !== undefined))];
         const missingBlocks = blockNumbers.filter((blockNumber) => !blockTimestampCache.current.has(blockNumber));
         const blocks = await Promise.all(missingBlocks.map((blockNumber) => publicClient.getBlock({ blockNumber })));
+        for (const block of blocks) candidateTimestamps.set(block.number, block.timestamp);
+        const candidateEvents = buildChainAuditEvents(candidateLogs, candidateTimestamps);
+        if (!shouldApplyVaultSnapshot(requestedVault, activeVaultRef.current) || !shouldApplyVaultBlock(token, vaultRequestGuard.current, blockNumber, latestAppliedBlock.current)) return;
         for (const block of blocks) blockTimestampCache.current.set(block.number, block.timestamp);
+        auditHistoryCache.current.set(auditCacheKey, { deployedAtBlock, indexedThroughBlock: blockNumber, logs: candidateLogs });
+        setAuditEvents(candidateEvents);
+        setAuditIndexCoverage({ state: "fresh", indexedThroughBlock: blockNumber });
+        setNotice((current) => current?.text === auditIndexingUnavailableCopy ? null : current);
+      } catch {
         if (!shouldApplyVaultSnapshot(requestedVault, activeVaultRef.current) || !shouldApplyVaultBlock(token, vaultRequestGuard.current, blockNumber, latestAppliedBlock.current)) return;
-        setAuditEvents(buildChainAuditEvents(logs, blockTimestampCache.current));
-      } catch (error) {
-        if (!shouldApplyVaultSnapshot(requestedVault, activeVaultRef.current) || !shouldApplyVaultBlock(token, vaultRequestGuard.current, blockNumber, latestAppliedBlock.current)) return;
-        setAuditEvents([]);
-        setNotice({ tone: "warning", text: `Vault loaded, but audit indexing is temporarily unavailable: ${errorMessage(error)}` });
+        setAuditEvents(reusableHistory ? buildChainAuditEvents(reusableHistory.logs, blockTimestampCache.current) : []);
+        setAuditIndexCoverage({
+          state: "stale",
+          targetBlock: blockNumber,
+          ...(reusableHistory ? { lastCompleteBlock: reusableHistory.indexedThroughBlock } : {}),
+        });
+        setNotice({ tone: "warning", text: auditIndexingUnavailableCopy });
       }
     } catch (error) {
       if (!vaultRequestGuard.current.isCurrent(token) || !shouldApplyVaultSnapshot(requestedVault, activeVaultRef.current)) return;
@@ -642,6 +682,7 @@ export function DashboardApp() {
     beneficiaries={(vault?.beneficiaries ?? []).map((beneficiary) => ({ label: beneficiary.label, address: beneficiary.address, shareLabel: `${beneficiary.shareBps / 100}%`, claimed: vault?.status === "SETTLED" && beneficiary.claimableWei === 0n }))}
     canClaim={Boolean(account && vault?.beneficiaries.some((beneficiary) => beneficiary.address.toLowerCase() === account.toLowerCase() && beneficiary.claimableWei > 0n))}
     auditItems={auditItems}
+    auditIndexCoverage={auditIndexCoverage}
     pendingAction={pendingAction}
     message={notice}
     automation={automationHealth}

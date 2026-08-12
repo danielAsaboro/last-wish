@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const vault = "0x2222222222222222222222222222222222222222" as const;
 const owner = "0x1111111111111111111111111111111111111111" as const;
 const otherAccount = "0x3333333333333333333333333333333333333333" as const;
+const replacementVault = "0x6666666666666666666666666666666666666666" as const;
 
 const mocks = vi.hoisted(() => {
   process.env.NEXT_PUBLIC_LASTWISH_FACTORY_ADDRESS = "0x5555555555555555555555555555555555555555";
@@ -24,22 +25,25 @@ const mocks = vi.hoisted(() => {
   };
 });
 
-vi.mock("wagmi", () => ({
-  useAccount: () => ({ address: mocks.account, chainId: mocks.chainId, isConnected: true }),
-  useConnect: () => ({
-    connectors: [{ type: "injected", getProvider: async () => ({}) }],
-    connectAsync: mocks.connectAsync,
-  }),
-  useSwitchChain: () => ({ switchChain: mocks.switchChain }),
-  useWalletClient: () => ({ data: { signMessage: mocks.signMessage, writeContract: mocks.writeContract, sendTransaction: mocks.sendTransaction } }),
-  usePublicClient: () => ({
+vi.mock("wagmi", () => {
+  const publicClient = {
     getBlock: mocks.getBlock,
     readContract: mocks.readContract,
     getBalance: mocks.getBalance,
     getContractEvents: mocks.getContractEvents,
     waitForTransactionReceipt: mocks.waitForTransactionReceipt,
-  }),
-}));
+  };
+  return {
+    useAccount: () => ({ address: mocks.account, chainId: mocks.chainId, isConnected: true }),
+    useConnect: () => ({
+      connectors: [{ type: "injected", getProvider: async () => ({}) }],
+      connectAsync: mocks.connectAsync,
+    }),
+    useSwitchChain: () => ({ switchChain: mocks.switchChain }),
+    useWalletClient: () => ({ data: { signMessage: mocks.signMessage, writeContract: mocks.writeContract, sendTransaction: mocks.sendTransaction } }),
+    usePublicClient: () => publicClient,
+  };
+});
 
 vi.mock("@/lib/wallet/config", () => ({ preferredChain: { id: 84532, name: "Base Sepolia" } }));
 
@@ -57,6 +61,8 @@ function json(body: unknown, status = 200): Response {
 
 describe("DashboardApp async action identity", () => {
   let intervalCallbacks: Array<() => void>;
+  let nextIntervalId: number;
+  let activeIntervals: Array<{ id: number; callback: () => void }>;
   let fetchMock: ReturnType<typeof vi.fn>;
   let latestBlockCall: number;
 
@@ -68,10 +74,18 @@ describe("DashboardApp async action identity", () => {
     mocks.chainId = 84532;
     mocks.invalidVault = undefined;
     latestBlockCall = 0;
+    nextIntervalId = 0;
+    activeIntervals = [];
     intervalCallbacks = [];
     vi.spyOn(window, "setInterval").mockImplementation((handler) => {
-      intervalCallbacks.push(handler as () => void);
-      return intervalCallbacks.length as unknown as NodeJS.Timeout;
+      nextIntervalId += 1;
+      activeIntervals.push({ id: nextIntervalId, callback: handler as () => void });
+      intervalCallbacks = activeIntervals.map(({ callback }) => callback);
+      return nextIntervalId as unknown as NodeJS.Timeout;
+    });
+    vi.spyOn(window, "clearInterval").mockImplementation((id) => {
+      activeIntervals = activeIntervals.filter((interval) => interval.id !== Number(id));
+      intervalCallbacks = activeIntervals.map(({ callback }) => callback);
     });
     mocks.getBlock.mockReset().mockImplementation(async (input: { blockTag?: string; blockNumber?: bigint }) => {
       if (input.blockTag === "latest") {
@@ -243,6 +257,187 @@ describe("DashboardApp async action identity", () => {
     expect(screen.getByText("Policy v2")).toBeInTheDocument();
     expect(screen.queryByText("Policy v1")).not.toBeInTheDocument();
     expect(screen.queryByText(/keeperhub automation is healthy/i)).not.toBeInTheDocument();
+  });
+
+  it("indexes the initial audit range in bounded windows and polls only new blocks", async () => {
+    mocks.getBlock.mockImplementation(async (input: { blockTag?: string; blockNumber?: bigint }) => {
+      if (input.blockTag === "latest") {
+        latestBlockCall += 1;
+        return latestBlockCall === 1
+          ? { number: 25_010n, timestamp: 1_800_000_000n }
+          : { number: 25_015n, timestamp: 1_800_000_005n };
+      }
+      return { number: input.blockNumber ?? 25_010n, timestamp: 1_800_000_000n };
+    });
+    mocks.readContract.mockImplementation(async (input: { functionName: string }) => {
+      switch (input.functionName) {
+        case "owner": return owner;
+        case "guardian": return otherAccount;
+        case "policyVersion": return 1n;
+        case "status": return 0;
+        case "beneficiaryCount": return 0n;
+        case "heartbeatInterval": return 2_592_000n;
+        case "gracePeriod": return 1_209_600n;
+        case "lastHeartbeat": return 1_799_900_000n;
+        case "pendingAt": return 0n;
+        case "deployedAtBlock": return 7n;
+        case "vaultOf": return vault;
+        default: throw new Error(`Unexpected read ${input.functionName}`);
+      }
+    });
+
+    render(<DashboardApp />);
+
+    await waitFor(() => expect(mocks.getContractEvents).toHaveBeenCalledTimes(3));
+    expect(mocks.getContractEvents.mock.calls.map(([input]) => ({
+      fromBlock: input.fromBlock,
+      toBlock: input.toBlock,
+    }))).toEqual([
+      { fromBlock: 7n, toBlock: 10_006n },
+      { fromBlock: 10_007n, toBlock: 20_006n },
+      { fromBlock: 20_007n, toBlock: 25_010n },
+    ]);
+    expect(await screen.findByText("Chain history indexed through block 25010")).toBeInTheDocument();
+
+    await act(async () => { intervalCallbacks[0]?.(); });
+
+    await waitFor(() => expect(mocks.getContractEvents).toHaveBeenCalledTimes(4));
+    expect(mocks.getContractEvents.mock.calls.at(-1)?.[0]).toMatchObject({
+      fromBlock: 25_011n,
+      toBlock: 25_015n,
+    });
+  });
+
+  it("retains the last complete chain range and KeeperHub evidence when incremental indexing fails", async () => {
+    const transactionHash = `0x${"a".repeat(64)}` as const;
+    mocks.getBlock.mockImplementation(async (input: { blockTag?: string; blockNumber?: bigint }) => {
+      if (input.blockTag === "latest") {
+        latestBlockCall += 1;
+        return latestBlockCall === 1
+          ? { number: 100n, timestamp: 1_800_000_000n }
+          : { number: 105n, timestamp: 1_800_000_005n };
+      }
+      return { number: input.blockNumber ?? 100n, timestamp: 1_799_999_990n };
+    });
+    mocks.getContractEvents
+      .mockResolvedValueOnce([{
+        eventName: "Heartbeat",
+        blockNumber: 90n,
+        transactionHash,
+        logIndex: 0,
+        args: { owner },
+      }])
+      .mockRejectedValueOnce(new Error("https://rpc.example/private-token"));
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/keeperhub/readiness")) return json({ status: "ready", nextStep: "KeeperHub is ready." });
+      if (url.includes("/api/keeperhub/evidence")) return json({
+        configured: true,
+        chainId: 84532,
+        vault,
+        policyVersion: "1",
+        workflows: [],
+        executionEvidenceScope: "recent_keeperhub_window_only",
+        evidence: [{
+          workflowId: "wf_check",
+          executionId: "exec_check",
+          status: "verified",
+          verified: true,
+          outcome: "NO_WRITE",
+          observedVaultStatus: "ACTIVE",
+          timestamp: "1800000001",
+        }],
+      });
+      throw new Error(`Unexpected fetch ${url}`);
+    });
+
+    render(<DashboardApp />);
+
+    expect(await screen.findByText("Owner heartbeat recorded")).toBeInTheDocument();
+    expect(await screen.findByText("Eligibility check completed")).toBeInTheDocument();
+    expect(screen.getByText("Chain history indexed through block 100")).toBeInTheDocument();
+
+    await act(async () => { intervalCallbacks[0]?.(); });
+
+    expect(await screen.findByText("Chain audit indexing is temporarily unavailable. The last complete event range remains visible.")).toBeInTheDocument();
+    expect(screen.getByText("Chain history is stale")).toBeInTheDocument();
+    expect(screen.getByText("Last complete through block 100. Target block 105.")).toBeInTheDocument();
+    expect(screen.getByText("Owner heartbeat recorded")).toBeInTheDocument();
+    expect(screen.getByText("Eligibility check completed")).toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent("https://rpc.example/private-token");
+  });
+
+  it("does not apply a late vault-A audit chunk or coverage to vault B", async () => {
+    const vaultAHistory = deferred<Array<{
+      eventName: string;
+      blockNumber: bigint;
+      transactionHash: `0x${string}`;
+      logIndex: number;
+      args: { owner: typeof owner };
+    }>>();
+    const vaultATransaction = `0x${"a".repeat(64)}` as const;
+    const vaultBTransaction = `0x${"b".repeat(64)}` as const;
+    mocks.getBlock.mockImplementation(async (input: { blockTag?: string; blockNumber?: bigint }) => {
+      if (input.blockTag === "latest") {
+        latestBlockCall += 1;
+        return latestBlockCall === 1
+          ? { number: 100n, timestamp: 1_800_000_000n }
+          : { number: 101n, timestamp: 1_800_000_001n };
+      }
+      return { number: input.blockNumber ?? 100n, timestamp: 1_799_999_900n + (input.blockNumber ?? 100n) };
+    });
+    mocks.readContract.mockImplementation(async (input: { address?: string; functionName: string; args?: readonly unknown[] }) => {
+      switch (input.functionName) {
+        case "owner": return input.address?.toLowerCase() === replacementVault.toLowerCase() ? otherAccount : owner;
+        case "guardian": return owner;
+        case "policyVersion": return 1n;
+        case "status": return 0;
+        case "beneficiaryCount": return 0n;
+        case "heartbeatInterval": return 2_592_000n;
+        case "gracePeriod": return 1_209_600n;
+        case "lastHeartbeat": return 1_799_900_000n;
+        case "pendingAt": return 0n;
+        case "deployedAtBlock": return 1n;
+        case "vaultOf": return input.args?.[0] === otherAccount ? replacementVault : vault;
+        default: throw new Error(`Unexpected read ${input.functionName}`);
+      }
+    });
+    mocks.getContractEvents.mockImplementation(async (input: { address: string }) => {
+      if (input.address.toLowerCase() === vault.toLowerCase()) return vaultAHistory.promise;
+      return [{
+        eventName: "Deposit",
+        blockNumber: 101n,
+        transactionHash: vaultBTransaction,
+        logIndex: 0,
+        args: { sender: otherAccount, amount: 1n },
+      }];
+    });
+
+    render(<DashboardApp />);
+    expect(await screen.findByText("Policy v1")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText(/vault address/i), { target: { value: replacementVault } });
+    fireEvent.click(screen.getByRole("button", { name: /load vault/i }));
+
+    expect(await screen.findByText("Vault funded")).toBeInTheDocument();
+    expect(screen.getByText("Chain history indexed through block 101")).toBeInTheDocument();
+
+    await act(async () => {
+      vaultAHistory.resolve([{
+        eventName: "Heartbeat",
+        blockNumber: 90n,
+        transactionHash: vaultATransaction,
+        logIndex: 0,
+        args: { owner },
+      }]);
+      await vaultAHistory.promise;
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByText("Owner heartbeat recorded")).not.toBeInTheDocument();
+    expect(screen.getByText("Vault funded")).toBeInTheDocument();
+    expect(screen.getByText("Chain history indexed through block 101")).toBeInTheDocument();
+    expect(screen.queryByText("Chain history indexed through block 100")).not.toBeInTheDocument();
   });
 });
 

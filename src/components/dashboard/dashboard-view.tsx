@@ -10,6 +10,11 @@ import type { Address, VaultStatus } from "@/lib/succession/types";
 export type DashboardRole = "owner" | "guardian" | "beneficiary" | "observer";
 export type DashboardAction = "heartbeat" | "update-policy" | "withdraw" | "veto" | "claim" | "fund" | "register";
 export type WalletTransactionProgress = { label: string; stage: "AWAITING_SIGNATURE" | "CONFIRMING"; target?: Address; transactionHash?: Address };
+export type AuditIndexCoverage =
+  | { state: "idle" }
+  | { state: "indexing"; targetBlock: bigint; lastCompleteBlock?: bigint }
+  | { state: "fresh"; indexedThroughBlock: bigint }
+  | { state: "stale"; targetBlock: bigint; lastCompleteBlock?: bigint };
 
 export type DashboardViewProps = {
   connection: "disconnected" | "wrong-network" | "connected";
@@ -30,6 +35,7 @@ export type DashboardViewProps = {
   beneficiaries: Array<{ label: string; address: string; shareLabel: string; claimed: boolean }>;
   canClaim: boolean;
   auditItems: AuditTimelineItem[];
+  auditIndexCoverage: AuditIndexCoverage;
   pendingAction: DashboardAction | null;
   message: { tone: "success" | "warning" | "danger"; text: string } | null;
   automation?: AutomationHealth;
@@ -145,7 +151,8 @@ export function DashboardView(props: DashboardViewProps) {
 
             <article className="panel audit-panel">
               <div className="panel-heading"><div><p className="eyebrow">Evidence, not activity</p><h2>Audit trail</h2></div><span>{props.auditItems.length}</span></div>
-              {props.auditItems.length === 0 ? <div className="empty-state"><span>◎</span><p>No indexed events yet. Confirmed contract events and KeeperHub receipts will appear here.</p></div> :
+              <AuditCoverage coverage={props.auditIndexCoverage} />
+              {props.auditItems.length === 0 ? <div className="empty-state"><span>◎</span><p>{auditEmptyCopy(props.auditIndexCoverage)}</p></div> :
                 <ol className="audit-list">{props.auditItems.map((item) => <AuditTimelineRow key={item.id} item={item} chainName={props.chainName} />)}</ol>}
             </article>
           </section>
@@ -153,6 +160,33 @@ export function DashboardView(props: DashboardViewProps) {
       ) : <section className="empty-vault"><p className="eyebrow">No vault loaded</p><h2>Create a policy or load an existing vault.</h2><p>Every value shown after loading comes from the connected chain.</p></section>}
     </DashboardFrame>
   );
+}
+
+function AuditCoverage({ coverage }: { coverage: AuditIndexCoverage }) {
+  if (coverage.state === "idle") {
+    return <div className="audit-coverage coverage-idle"><span aria-hidden="true" /><div><strong>Chain history indexing is idle</strong><small>Waiting for a verified vault snapshot.</small></div></div>;
+  }
+  if (coverage.state === "indexing") {
+    return <div className="audit-coverage coverage-indexing" aria-live="polite"><span aria-hidden="true" /><div>
+      <strong>Indexing confirmed contract events through block {coverage.targetBlock.toString()}</strong>
+      {coverage.lastCompleteBlock !== undefined && <small>Last complete through block {coverage.lastCompleteBlock.toString()}.</small>}
+    </div></div>;
+  }
+  if (coverage.state === "fresh") {
+    return <div className="audit-coverage coverage-fresh"><span aria-hidden="true" /><div><strong>Chain history indexed through block {coverage.indexedThroughBlock.toString()}</strong></div></div>;
+  }
+  return <div className="audit-coverage coverage-stale"><span aria-hidden="true" /><div>
+    <strong>Chain history is stale</strong>
+    <small>{coverage.lastCompleteBlock === undefined
+      ? `Target block ${coverage.targetBlock.toString()}. No complete chain event range is available.`
+      : `Last complete through block ${coverage.lastCompleteBlock.toString()}. Target block ${coverage.targetBlock.toString()}.`}</small>
+  </div></div>;
+}
+
+function auditEmptyCopy(coverage: AuditIndexCoverage) {
+  if (coverage.state === "indexing") return "Confirmed contract events will appear when the current indexing pass completes.";
+  if (coverage.state === "stale" && coverage.lastCompleteBlock === undefined) return "No complete chain event range is available. KeeperHub evidence remains independently reconciled.";
+  return "No indexed events yet. Confirmed contract events and KeeperHub receipts will appear here.";
 }
 
 function AuditTimelineRow({ item, chainName }: { item: AuditTimelineItem; chainName: string }) {

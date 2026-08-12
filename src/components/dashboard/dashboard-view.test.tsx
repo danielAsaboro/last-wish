@@ -20,6 +20,7 @@ const baseProps: DashboardViewProps = {
   ],
   canClaim: true,
   auditItems: [],
+  auditIndexCoverage: { state: "idle" },
   pendingAction: null,
   message: null,
   lifecycle: {
@@ -107,6 +108,25 @@ describe("DashboardView", () => {
     expect(screen.queryByRole("button", { name: /veto settlement/i })).not.toBeInTheDocument();
     expect(screen.getByText(/read from base sepolia/i)).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: /audit trail/i })).toBeInTheDocument();
+  });
+
+  it("reports indexing, fresh, and stale chain-history coverage without inventing a completed range", () => {
+    const { rerender } = render(<DashboardView {...baseProps} auditIndexCoverage={{ state: "indexing", targetBlock: 25_010n }} />);
+    expect(screen.getByText("Indexing confirmed contract events through block 25010")).toBeInTheDocument();
+    expect(screen.queryByText(/no indexed events yet/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/last complete/i)).not.toBeInTheDocument();
+
+    rerender(<DashboardView {...baseProps} auditIndexCoverage={{ state: "fresh", indexedThroughBlock: 25_010n }} />);
+    expect(screen.getByText("Chain history indexed through block 25010")).toBeInTheDocument();
+
+    rerender(<DashboardView {...baseProps} auditIndexCoverage={{ state: "stale", targetBlock: 25_015n, lastCompleteBlock: 25_010n }} />);
+    expect(screen.getByText("Chain history is stale")).toBeInTheDocument();
+    expect(screen.getByText("Last complete through block 25010. Target block 25015.")).toBeInTheDocument();
+
+    rerender(<DashboardView {...baseProps} auditIndexCoverage={{ state: "stale", targetBlock: 25_015n }} />);
+    expect(screen.getByText("Chain history is stale")).toBeInTheDocument();
+    expect(screen.queryByText(/last complete/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/no indexed events yet/i)).not.toBeInTheDocument();
   });
 
   it("renders explicit verification failure for an invalid EOA address without synthesizing ACTIVE", () => {
