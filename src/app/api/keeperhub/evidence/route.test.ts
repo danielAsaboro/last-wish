@@ -9,11 +9,12 @@ const rpc = vi.hoisted(() => ({
   readContract: vi.fn(),
   getTransactionReceipt: vi.fn(),
 }));
+const parseEventLogs = vi.hoisted(() => vi.fn());
 
 vi.mock("@/lib/keeperhub/server", () => ({ keeperHubClientFromEnv: () => keeperHub }));
 vi.mock("viem", async (importOriginal) => {
   const actual = await importOriginal<typeof import("viem")>();
-  return { ...actual, createPublicClient: vi.fn(() => rpc) };
+  return { ...actual, createPublicClient: vi.fn(() => rpc), parseEventLogs };
 });
 
 import { POST } from "./route";
@@ -26,6 +27,7 @@ describe("POST /api/keeperhub/evidence", () => {
     keeperHub.getWorkflowExecutionLogs.mockReset();
     rpc.readContract.mockReset();
     rpc.getTransactionReceipt.mockReset();
+    parseEventLogs.mockReset();
   });
 
   afterEach(() => vi.unstubAllEnvs());
@@ -112,5 +114,63 @@ describe("POST /api/keeperhub/evidence", () => {
       ],
     });
     expect(keeperHub.listWorkflowExecutions).toHaveBeenCalledTimes(2);
+  });
+
+  it("verifies a transaction only when its vault settlement event has the registration policy version", async () => {
+    const vault = "0x1111111111111111111111111111111111111111";
+    const hash = `0x${"a".repeat(64)}`;
+    rpc.readContract.mockResolvedValueOnce(0).mockResolvedValueOnce(3n).mockResolvedValueOnce(1);
+    keeperHub.listWorkflows.mockResolvedValue([
+      { id: "wf_open", name: "Open", description: `Registration key: lastwish:84532:${vault}:3:open`, enabled: true },
+    ]);
+    keeperHub.listWorkflowExecutions.mockResolvedValue([
+      { id: "exec_open", workflowId: "wf_open", status: "success", transactionHashes: [{ hash, nodeId: "execute", nodeName: "Open grace" }] },
+    ]);
+    keeperHub.getWorkflowExecutionLogs.mockResolvedValue({
+      execution: { id: "exec_open", workflowId: "wf_open", status: "success" },
+      logs: [{
+        id: "log_open", executionId: "exec_open", nodeId: "execute", nodeName: "Open grace", nodeType: "web3/write-contract", status: "success",
+        input: {}, output: { success: true, transactionHash: hash }, error: null, duration: "1", startedAt: "2026-08-12T12:00:00Z", completedAt: "2026-08-12T12:00:01Z",
+      }],
+    });
+    rpc.getTransactionReceipt.mockResolvedValue({ status: "success", blockNumber: 42n, gasUsed: 70_000n, logs: [] });
+    parseEventLogs.mockReturnValue([{ address: vault, eventName: "SettlementOpened", args: { policyVersion: 3n } }]);
+
+    const response = await POST(new Request("http://localhost/api/keeperhub/evidence", {
+      method: "POST", body: JSON.stringify({ chainId: 84532, vault }),
+    }));
+
+    await expect(response.json()).resolves.toMatchObject({
+      evidence: [expect.objectContaining({ executionId: "exec_open", status: "verified", observedVaultStatus: "PENDING" })],
+    });
+  });
+
+  it("keeps a transaction recovery-required when the vault event policy version differs from the registration", async () => {
+    const vault = "0x1111111111111111111111111111111111111111";
+    const hash = `0x${"b".repeat(64)}`;
+    rpc.readContract.mockResolvedValueOnce(0).mockResolvedValueOnce(3n).mockResolvedValueOnce(1);
+    keeperHub.listWorkflows.mockResolvedValue([
+      { id: "wf_open", name: "Open", description: `Registration key: lastwish:84532:${vault}:3:open`, enabled: true },
+    ]);
+    keeperHub.listWorkflowExecutions.mockResolvedValue([
+      { id: "exec_open", workflowId: "wf_open", status: "success", transactionHashes: [{ hash, nodeId: "execute", nodeName: "Open grace" }] },
+    ]);
+    keeperHub.getWorkflowExecutionLogs.mockResolvedValue({
+      execution: { id: "exec_open", workflowId: "wf_open", status: "success" },
+      logs: [{
+        id: "log_open", executionId: "exec_open", nodeId: "execute", nodeName: "Open grace", nodeType: "web3/write-contract", status: "success",
+        input: {}, output: { success: true, transactionHash: hash }, error: null, duration: "1", startedAt: "2026-08-12T12:00:00Z", completedAt: "2026-08-12T12:00:01Z",
+      }],
+    });
+    rpc.getTransactionReceipt.mockResolvedValue({ status: "success", blockNumber: 42n, gasUsed: 70_000n, logs: [] });
+    parseEventLogs.mockReturnValue([{ address: vault, eventName: "SettlementOpened", args: { policyVersion: 2n } }]);
+
+    const response = await POST(new Request("http://localhost/api/keeperhub/evidence", {
+      method: "POST", body: JSON.stringify({ chainId: 84532, vault }),
+    }));
+
+    await expect(response.json()).resolves.toMatchObject({
+      evidence: [expect.objectContaining({ executionId: "exec_open", status: "unknown", observedVaultStatus: "RECOVERY_REQUIRED" })],
+    });
   });
 });

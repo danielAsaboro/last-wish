@@ -95,7 +95,10 @@ export async function POST(request: Request) {
           const statusAtReceipt = await readVaultStatusAtBlock(rpc, vault, receipt.blockNumber);
           const expectedEvent = expectedStatus === "PENDING" ? "SettlementOpened" : "SettlementFinalized";
           const eventVerified = parseEventLogs({ abi: vaultAbi, logs: receipt.logs }).some(
-            (log) => log.address.toLowerCase() === vault.toLowerCase() && log.eventName === expectedEvent,
+            (log) =>
+              log.address.toLowerCase() === vault.toLowerCase() &&
+              log.eventName === expectedEvent &&
+              log.args.policyVersion === registration.policyVersion,
           );
           evidence.push(classifyWorkflowEvidence(execution, expectedStatus, {
             keeperWriteVerified: verifyKeeperHubWriteLog(

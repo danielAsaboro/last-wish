@@ -1,18 +1,29 @@
 import { describe, expect, it } from "vitest";
 
-import * as evidenceModule from "./evidence";
+import { deriveAutomationHealth, type DiscoveredWorkflowRegistration } from "./evidence";
+
+const coverage = { runsReturned: 0, providerWindow: "latest_50_non_purged" as const, olderRunsMayExist: false, providerPagination: "unavailable" as const };
+
+function workflow(overrides: Partial<DiscoveredWorkflowRegistration>): DiscoveredWorkflowRegistration {
+  return {
+    workflowId: "wf_open",
+    name: "Open",
+    policyVersion: "3",
+    action: "open",
+    enabled: true,
+    registrationState: "current",
+    coverage,
+    ...overrides,
+  };
+}
 
 describe("KeeperHub evidence discovery", () => {
-  it("counts only server-discovered current registrations", () => {
-    const countCurrentWorkflowRegistrations = (evidenceModule as {
-      countCurrentWorkflowRegistrations?: (workflows: Array<{ registrationState: "current" | "stale" }>) => number;
-    }).countCurrentWorkflowRegistrations;
-    expect(countCurrentWorkflowRegistrations).toEqual(expect.any(Function));
-    if (!countCurrentWorkflowRegistrations) return;
-    expect(countCurrentWorkflowRegistrations([
-      { registrationState: "current" },
-      { registrationState: "stale" },
-      { registrationState: "current" },
-    ])).toBe(2);
+  it("requires exactly one enabled current open and finalize workflow", () => {
+    const currentOpen = workflow({});
+    const currentFinalize = workflow({ workflowId: "wf_finalize", action: "finalize" });
+    expect(deriveAutomationHealth([currentOpen, currentFinalize]).state).toBe("healthy");
+    expect(deriveAutomationHealth([{ ...currentOpen, enabled: false }, currentFinalize]).state).toBe("recovery_required");
+    expect(deriveAutomationHealth([currentOpen, { ...currentOpen, workflowId: "wf_open_copy" }, currentFinalize]).state).toBe("recovery_required");
+    expect(deriveAutomationHealth([currentOpen]).state).toBe("recovery_required");
   });
 });

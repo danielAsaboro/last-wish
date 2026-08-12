@@ -22,7 +22,7 @@ import { buildChainAuditEvents } from "@/lib/audit/chain-events";
 import { buildAuditTimeline, type ChainAuditEvent } from "@/lib/audit/timeline";
 import { factoryAbi, vaultAbi } from "@/lib/contracts/abi";
 import { buildWorkflowAuthorizationMessage } from "@/lib/keeperhub/authorization";
-import { countCurrentWorkflowRegistrations, type DiscoveredWorkflowRegistration } from "@/lib/keeperhub/evidence";
+import { deriveAutomationHealth, type DiscoveredWorkflowRegistration } from "@/lib/keeperhub/evidence";
 import { buildPolicyArguments, type PolicyDraft } from "@/lib/succession/draft";
 import { labelsFromDraft, mergeBeneficiaryLabels, parseBeneficiaryLabels } from "@/lib/succession/labels";
 import { buildLifecycleSummary } from "@/lib/succession/status";
@@ -69,7 +69,8 @@ export function DashboardApp() {
   const [vault, setVault] = useState<LoadedVault>();
   const [auditEvents, setAuditEvents] = useState<ChainAuditEvent[]>([]);
   const [keeperEvidence, setKeeperEvidence] = useState<KeeperHubEvidence[]>([]);
-  const [workflowCount, setWorkflowCount] = useState(0);
+  const [discoveredWorkflows, setDiscoveredWorkflows] = useState<DiscoveredWorkflowRegistration[]>([]);
+  const [executionEvidenceScope, setExecutionEvidenceScope] = useState<"recent_keeperhub_window_only">("recent_keeperhub_window_only");
   const [pendingAction, setPendingAction] = useState<DashboardAction | null>(null);
   const [composer, setComposer] = useState<"fund" | "withdraw" | "update-policy" | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
@@ -199,9 +200,11 @@ export function DashboardApp() {
       if (!response.ok) return;
       const body = await response.json() as {
         workflows?: DiscoveredWorkflowRegistration[];
+        executionEvidenceScope?: "recent_keeperhub_window_only";
         evidence?: Array<Omit<KeeperHubEvidence, "blockNumber" | "gasUsed" | "timestamp"> & { blockNumber?: string; gasUsed?: string; timestamp?: string }>;
       };
-      setWorkflowCount(countCurrentWorkflowRegistrations(body.workflows ?? []));
+      setDiscoveredWorkflows(body.workflows ?? []);
+      setExecutionEvidenceScope(body.executionEvidenceScope ?? "recent_keeperhub_window_only");
       setKeeperEvidence((body.evidence ?? []).map((item) => ({
         ...item,
         blockNumber: item.blockNumber === undefined ? undefined : BigInt(item.blockNumber),
@@ -232,6 +235,7 @@ export function DashboardApp() {
   const connection = !isConnected ? "disconnected" : chainId !== preferredChain.id ? "wrong-network" : "connected";
   const auditItems = useMemo(() => buildAuditTimeline({ chainEvents: auditEvents, keeperHub: keeperEvidence }), [auditEvents, keeperEvidence]);
   const lifecycle = useMemo(() => vault ? buildLifecycleSummary(vault, vault.observedAt) : undefined, [vault]);
+  const automationHealth = useMemo(() => deriveAutomationHealth(discoveredWorkflows), [discoveredWorkflows]);
 
   async function executeSimpleAction(action: Exclude<DashboardAction, "fund" | "withdraw" | "update-policy" | "register">) {
     if (!walletClient || !vaultAddress || !publicClient) return;
@@ -293,7 +297,7 @@ export function DashboardApp() {
       setTransactionProgress({ label: "Update policy", stage: "CONFIRMING", transactionHash: hash });
       const receipt = assertSuccessfulReceipt(await publicClient.waitForTransactionReceipt({ hash }));
       window.localStorage.setItem(`lastwish:labels:${preferredChain.id}:${vaultAddress}`, JSON.stringify(labelsFromDraft(draft.beneficiaries)));
-      setWorkflowCount(0);
+      setDiscoveredWorkflows([]);
       setComposer(null); setNotice({ tone: "success", text: `Policy update confirmed in block ${receipt.blockNumber}. The heartbeat clock reset.` });
       await refreshVault();
     } catch (error) { setNotice({ tone: "danger", text: errorMessage(error) }); }
@@ -359,7 +363,6 @@ export function DashboardApp() {
       const history = readWorkflowRegistrations(vaultAddress);
       const combined = [...history.filter((item) => !registrations.some((current) => current.workflowId === item.workflowId)), ...registrations].slice(-4);
       window.localStorage.setItem(`lastwish:workflows:${preferredChain.id}:${vaultAddress}`, JSON.stringify(combined));
-      setWorkflowCount(registrations.length);
       await refreshEvidence(combined);
       setNotice({ tone: "success", text: `KeeperHub registered and preflighted ${registrations.length} scheduled workflows.` });
     } catch (error) { setNotice({ tone: "danger", text: errorMessage(error) }); }
@@ -375,13 +378,14 @@ export function DashboardApp() {
     vaultAddress={vaultAddress}
     balanceLabel={vault ? `${formatEther(vault.balanceWei)} ETH` : "—"}
     policyVersion={vault?.policyVersion.toString() ?? "—"}
-    canRegisterAutomation={workflowCount === 0}
+    canRegisterAutomation={automationHealth.state !== "healthy"}
     beneficiaries={(vault?.beneficiaries ?? []).map((beneficiary) => ({ label: beneficiary.label, address: beneficiary.address, shareLabel: `${beneficiary.shareBps / 100}%`, claimed: vault?.status === "SETTLED" && beneficiary.claimableWei === 0n }))}
     canClaim={Boolean(account && vault?.beneficiaries.some((beneficiary) => beneficiary.address.toLowerCase() === account.toLowerCase() && beneficiary.claimableWei > 0n))}
     auditItems={auditItems}
     pendingAction={pendingAction}
     message={notice}
-    automationLabel={workflowCount > 0 ? `${workflowCount} KeeperHub workflows · evidence refreshes every 30s` : "KeeperHub automation not registered"}
+    automation={automationHealth}
+    evidenceCoverage={{ scope: executionEvidenceScope, workflows: discoveredWorkflows }}
     lifecycle={lifecycle}
     transactionProgress={transactionProgress}
     onConnect={() => connectors[0] && connect({ connector: connectors[0] })}

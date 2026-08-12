@@ -1,6 +1,7 @@
 import Link from "next/link";
 
 import type { AuditTimelineItem } from "@/lib/audit/timeline";
+import type { AutomationHealth, DiscoveredWorkflowRegistration } from "@/lib/keeperhub/evidence";
 import type { LifecycleSummary } from "@/lib/succession/status";
 import type { Address, VaultStatus } from "@/lib/succession/types";
 
@@ -23,7 +24,8 @@ export type DashboardViewProps = {
   auditItems: AuditTimelineItem[];
   pendingAction: DashboardAction | null;
   message: { tone: "success" | "warning" | "danger"; text: string } | null;
-  automationLabel?: string;
+  automation?: AutomationHealth;
+  evidenceCoverage?: { scope: "recent_keeperhub_window_only"; workflows: DiscoveredWorkflowRegistration[] };
   lifecycle?: LifecycleSummary;
   transactionProgress?: WalletTransactionProgress;
   onConnect(): void;
@@ -78,7 +80,7 @@ export function DashboardView(props: DashboardViewProps) {
               <div className="card-head"><span>Current state</span><span className={`status-pill status-${props.status.toLowerCase()}`}>{props.status.replace("_", " ")}</span></div>
               <strong>{props.balanceLabel}</strong><small>Vault balance · read from {props.chainName}</small>
               <div className="address-line"><code>{shorten(props.vaultAddress, 10)}</code><span>Policy v{props.policyVersion}</span></div>
-              {props.automationLabel && <div className="automation-line"><span className="live-dot" />{props.automationLabel}</div>}
+              {props.automation && <AutomationEvidence health={props.automation} coverage={props.evidenceCoverage} />}
             </div>
             <div className="quick-actions" aria-label="Available vault actions">
               {props.role === "owner" && props.status === "ACTIVE" && <>
@@ -120,6 +122,23 @@ export function DashboardView(props: DashboardViewProps) {
       ) : <section className="empty-vault"><p className="eyebrow">No vault loaded</p><h2>Create a policy or load an existing vault.</h2><p>Every value shown after loading comes from the connected chain.</p></section>}
     </DashboardFrame>
   );
+}
+
+function AutomationEvidence({
+  health,
+  coverage,
+}: {
+  health: AutomationHealth;
+  coverage?: DashboardViewProps["evidenceCoverage"];
+}) {
+  const runsReturned = coverage?.workflows.reduce((total, workflow) => total + workflow.coverage.runsReturned, 0) ?? 0;
+  const olderRunsMayExist = coverage?.workflows.some((workflow) => workflow.coverage.olderRunsMayExist) ?? false;
+  return <div className={`automation-line automation-${health.state}`}>
+    <span className="live-dot" />
+    <div><strong>{health.state === "healthy" ? "KeeperHub automation is ready" : "KeeperHub automation needs repair"}</strong><small>{health.detail}</small>
+      {coverage && <small>Recent KeeperHub window only: latest 50 non-purged runs per workflow; {runsReturned} returned.{olderRunsMayExist ? " Older runs may exist." : ""}</small>}
+    </div>
+  </div>;
 }
 
 function LifecycleCard({ lifecycle }: { lifecycle: LifecycleSummary }) {

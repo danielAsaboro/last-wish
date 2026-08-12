@@ -79,6 +79,23 @@ describe("DashboardView", () => {
     expect(screen.queryByRole("button", { name: /register keeperhub/i })).not.toBeInTheDocument();
   });
 
+  it("keeps repair registration visible for incomplete discovered automation and reports limited KeeperHub coverage", () => {
+    render(<DashboardView {...baseProps}
+      canRegisterAutomation={true}
+      automation={{
+        state: "recovery_required",
+        detail: "The current open workflow is disabled and the current finalize workflow is missing.",
+      }}
+      evidenceCoverage={{
+        scope: "recent_keeperhub_window_only",
+        workflows: [{ workflowId: "wf_open", name: "Open", policyVersion: "3", action: "open", enabled: false, registrationState: "current", coverage: { runsReturned: 50, providerWindow: "latest_50_non_purged", olderRunsMayExist: true, providerPagination: "unavailable" } }],
+      }} />);
+    expect(screen.getByRole("button", { name: /register keeperhub/i })).toBeInTheDocument();
+    expect(screen.getByText(/automation needs repair/i)).toBeInTheDocument();
+    expect(screen.getByText(/latest 50 non-purged runs/i)).toBeInTheDocument();
+    expect(screen.getByText(/older runs may exist/i)).toBeInTheDocument();
+  });
+
   it("hides actions that the current contract timing or claim balance would reject", () => {
     const expiredLifecycle = { ...baseProps.lifecycle!, phase: "OPEN_ELIGIBLE" as const, currentStep: 1 as const };
     const { rerender } = render(<DashboardView {...baseProps} lifecycle={expiredLifecycle} />);
