@@ -62,7 +62,17 @@ export class KeeperHubClient {
     const { body } = await this.request(`/api/workflows/${encodeURIComponent(workflowId)}/simulate`, {
       method: "POST",
     });
-    return unwrapData(body) as Record<string, unknown>;
+    if (typeof body === "object" && body !== null && "ok" in body) {
+      const response = body as { ok: unknown; result?: unknown; error?: unknown };
+      if (response.ok !== true || typeof response.result !== "object" || response.result === null) {
+        const error = typeof response.error === "string" ? response.error.replaceAll("_", " ").toLowerCase() : "invalid response";
+        throw new Error(`KeeperHub workflow simulation unavailable: ${error}.`);
+      }
+      return response.result as Record<string, unknown>;
+    }
+    const legacy = unwrapData(body);
+    if (typeof legacy !== "object" || legacy === null) throw new Error("KeeperHub returned an invalid workflow simulation response.");
+    return legacy as Record<string, unknown>;
   }
 
   async updateWorkflow(workflowId: string, patch: Record<string, unknown>): Promise<Record<string, unknown>> {

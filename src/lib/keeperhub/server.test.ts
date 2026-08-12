@@ -20,6 +20,16 @@ describe("KeeperHubClient", () => {
     expect(fetcher).toHaveBeenCalledWith("https://app.keeperhub.com/api/workflows", expect.any(Object));
   });
 
+  it("requires KeeperHub's explicit workflow simulation success envelope", async () => {
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json({ ok: true, result: { simulatedNodeCount: 4, skippedNodeCount: 1 } }))
+      .mockResolvedValueOnce(Response.json({ ok: false, error: "SIMULATION_UNAVAILABLE" }));
+    const client = new KeeperHubClient({ apiKey: "kh_secret", fetcher });
+    await expect(client.simulateWorkflow("wf_123")).resolves.toEqual({ simulatedNodeCount: 4, skippedNodeCount: 1 });
+    await expect(client.simulateWorkflow("wf_123")).rejects.toThrow(/simulation unavailable/i);
+  });
+
+
   it("keeps the credential in the authorization header and parses enabled chains", async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
       Response.json({ chains: [{ chainId: 84532, name: "Base Sepolia", isEnabled: true, isTestnet: true }] }),

@@ -86,22 +86,24 @@ export function DashboardApp() {
   const refreshVault = useCallback(async () => {
     if (!vaultAddress || !publicClient) return;
     try {
+      const snapshotBlock = await publicClient.getBlock({ blockTag: "latest" });
+      const blockNumber = snapshotBlock.number;
       const [owner, guardian, policyVersion, statusCode, beneficiaryCount, heartbeatInterval, gracePeriod, lastHeartbeat, pendingAt, deployedAtBlock, balance] = await Promise.all([
-        publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "owner" }),
-        publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "guardian" }),
-        publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "policyVersion" }),
-        publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "status" }),
-        publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "beneficiaryCount" }),
-        publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "heartbeatInterval" }),
-        publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "gracePeriod" }),
-        publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "lastHeartbeat" }),
-        publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "pendingAt" }),
-        publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "deployedAtBlock" }),
-        publicClient.getBalance({ address: vaultAddress }),
+        publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "owner", blockNumber }),
+        publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "guardian", blockNumber }),
+        publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "policyVersion", blockNumber }),
+        publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "status", blockNumber }),
+        publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "beneficiaryCount", blockNumber }),
+        publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "heartbeatInterval", blockNumber }),
+        publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "gracePeriod", blockNumber }),
+        publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "lastHeartbeat", blockNumber }),
+        publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "pendingAt", blockNumber }),
+        publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "deployedAtBlock", blockNumber }),
+        publicClient.getBalance({ address: vaultAddress, blockNumber }),
       ]);
       const addresses = await Promise.all(
         Array.from({ length: Number(beneficiaryCount) }, (_, index) =>
-          publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "beneficiaryAt", args: [BigInt(index)] }),
+          publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "beneficiaryAt", args: [BigInt(index)], blockNumber }),
         ),
       );
       if (!factoryAddress || !isAddress(factoryAddress)) {
@@ -112,14 +114,15 @@ export function DashboardApp() {
         abi: factoryAbi,
         functionName: "vaultOf",
         args: [owner],
+        blockNumber,
       });
       if (registeredVault.toLowerCase() !== vaultAddress.toLowerCase()) {
         throw new Error("This address is not a vault created by the configured LastWish factory.");
       }
       const chainBeneficiaries = await Promise.all(addresses.map(async (address) => {
         const [shareBps, claimableWei] = await Promise.all([
-          publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "shareBps", args: [address] }),
-          publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "claimable", args: [address] }),
+          publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "shareBps", args: [address], blockNumber }),
+          publicClient.readContract({ address: vaultAddress, abi: vaultAbi, functionName: "claimable", args: [address], blockNumber }),
         ]);
         return { address, shareBps: Number(shareBps), claimableWei };
       }));
@@ -137,7 +140,7 @@ export function DashboardApp() {
         lastHeartbeat,
         pendingAt,
         deployedAtBlock,
-        observedAt: BigInt(Math.floor(Date.now() / 1000)),
+        observedAt: snapshotBlock.timestamp,
         beneficiaries,
       });
       window.localStorage.setItem(`lastwish:vault:${preferredChain.id}`, vaultAddress);
