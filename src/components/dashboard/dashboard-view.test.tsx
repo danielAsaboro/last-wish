@@ -115,7 +115,15 @@ describe("DashboardView", () => {
   it("blocks writes on the wrong network", () => {
     render(<DashboardView {...baseProps} connection="wrong-network" />);
     expect(screen.getByRole("button", { name: /switch to base sepolia/i })).toBeInTheDocument();
+    expect(screen.getByText(/read-only inspection remains available/i)).toBeInTheDocument();
+    expect(screen.getByText(/vault balance · read from base sepolia/i)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /record heartbeat/i })).not.toBeInTheDocument();
+  });
+
+  it("uses the blocking wrong-network screen only when no vault is loaded", () => {
+    render(<DashboardView {...baseProps} connection="wrong-network" vaultAddress={undefined} />);
+    expect(screen.getByText(/switch networks before continuing/i)).toBeInTheDocument();
+    expect(screen.queryByText(/vault balance/i)).not.toBeInTheDocument();
   });
 
   it("shows only active owner controls and real provenance labels", () => {
@@ -347,6 +355,16 @@ describe("DashboardView", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /export audit json/i }));
     expect(onExportAudit).toHaveBeenCalledOnce();
+  });
+
+  it("offers a shareable inspection link only for a verified loaded vault", () => {
+    const onCopyInspectionLink = vi.fn();
+    const { rerender } = render(<DashboardView {...baseProps} vaultResolution="ready" onCopyInspectionLink={onCopyInspectionLink} />);
+    fireEvent.click(screen.getByRole("button", { name: /copy inspection link/i }));
+    expect(onCopyInspectionLink).toHaveBeenCalledOnce();
+
+    rerender(<DashboardView {...baseProps} vaultResolution="invalid" onCopyInspectionLink={onCopyInspectionLink} />);
+    expect(screen.queryByRole("button", { name: /copy inspection link/i })).not.toBeInTheDocument();
   });
 
   it("distinguishes wallet approval from onchain confirmation", () => {

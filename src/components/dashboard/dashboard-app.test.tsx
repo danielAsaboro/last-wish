@@ -80,6 +80,7 @@ describe("DashboardApp async action identity", () => {
   beforeEach(() => {
     window.localStorage.clear();
     window.sessionStorage.clear();
+    window.history.replaceState(null, "", "/dashboard");
     window.localStorage.setItem("lastwish:vault:84532", vault);
     Object.defineProperty(document, "hidden", { configurable: true, value: false });
     mocks.account = owner;
@@ -229,6 +230,80 @@ describe("DashboardApp async action identity", () => {
     expect(fetchMock.mock.calls.filter(([input]) => String(input).includes("/api/keeperhub/workflows"))).toHaveLength(0);
   });
 
+  it("prioritizes a valid vault deep link over the last locally viewed vault", async () => {
+    window.localStorage.setItem("lastwish:vault:84532", replacementVault);
+    window.history.replaceState(null, "", `/dashboard?vault=${vault}`);
+    render(<DashboardApp />);
+
+    expect(await screen.findByText(/vault balance · read from base sepolia/i)).toBeInTheDocument();
+    await waitFor(() => expect(mocks.readContract.mock.calls.some(([input]) => input.address?.toLowerCase() === vault.toLowerCase() && input.functionName === "owner")).toBe(true));
+    expect(mocks.readContract.mock.calls.some(([input]) => input.address?.toLowerCase() === replacementVault.toLowerCase() && input.functionName === "owner")).toBe(false);
+    expect(window.location.search).toBe(`?vault=${vault}`);
+  });
+
+  it("does not replace a malformed explicit vault link with locally remembered state", async () => {
+    mocks.isConnected = false;
+    window.localStorage.setItem("lastwish:vault:84532", replacementVault);
+    window.history.replaceState(null, "", "/dashboard?vault=not-an-address");
+    render(<DashboardApp />);
+
+    expect(await screen.findByText(/shared vault address is invalid/i)).toBeInTheDocument();
+    expect(mocks.readContract.mock.calls.some(([input]) => input.functionName === "owner")).toBe(false);
+    expect(window.location.search).toBe("?vault=not-an-address");
+  });
+
+  it("does not let a late connected-account discovery override a vault selected for inspection", async () => {
+    const discovery = deferred<typeof vault>();
+    const defaultRead = mocks.readContract.getMockImplementation();
+    window.localStorage.clear();
+    mocks.readContract.mockImplementation(async (input: { address?: string; functionName: string; blockNumber?: bigint }) => {
+      if (input.functionName === "vaultOf") return input.blockNumber === undefined ? discovery.promise : replacementVault;
+      if (!defaultRead) throw new Error("Missing default read implementation");
+      return defaultRead(input);
+    });
+    render(<DashboardApp />);
+
+    await waitFor(() => expect(mocks.readContract.mock.calls.some(([input]) => input.functionName === "vaultOf" && input.blockNumber === undefined)).toBe(true));
+    fireEvent.change(screen.getByRole("textbox", { name: /vault address/i }), { target: { value: replacementVault } });
+    fireEvent.click(screen.getByRole("button", { name: /load vault/i }));
+    expect(await screen.findByText(/vault balance · read from base sepolia/i)).toBeInTheDocument();
+
+    await act(async () => { discovery.resolve(vault); await discovery.promise; });
+    await waitFor(() => expect(window.location.search).toBe(`?vault=${replacementVault}`));
+    expect(mocks.readContract.mock.calls.some(([input]) => input.address?.toLowerCase() === vault.toLowerCase() && input.functionName === "owner")).toBe(false);
+  });
+
+  it("discards a connected-account discovery that resolves after the account changes", async () => {
+    const firstDiscovery = deferred<typeof vault>();
+    window.localStorage.clear();
+    mocks.readContract.mockImplementation(async (input: { functionName: string; args?: readonly unknown[]; blockNumber?: bigint }) => {
+      if (input.functionName !== "vaultOf" || input.blockNumber !== undefined) throw new Error(`Unexpected read ${input.functionName}`);
+      return input.args?.[0] === owner ? firstDiscovery.promise : zeroAddress;
+    });
+    const { rerender } = render(<DashboardApp />);
+    await waitFor(() => expect(mocks.readContract).toHaveBeenCalled());
+
+    mocks.account = otherAccount;
+    rerender(<DashboardApp />);
+    await act(async () => { firstDiscovery.resolve(vault); await firstDiscovery.promise; });
+
+    expect(window.location.search).toBe("");
+    expect(screen.queryByText(/vault balance/i)).not.toBeInTheDocument();
+    expect(mocks.readContract.mock.calls.some(([input]) => input.address?.toLowerCase() === vault.toLowerCase() && input.functionName === "owner")).toBe(false);
+  });
+
+  it("keeps a verified linked vault readable while a connected wallet is on another network", async () => {
+    mocks.chainId = 11155111;
+    window.history.replaceState(null, "", `/dashboard?vault=${vault}`);
+    render(<DashboardApp />);
+
+    expect(await screen.findByText(/vault balance · read from base sepolia/i)).toBeInTheDocument();
+    expect(screen.getByText(/read-only inspection remains available/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /switch to base sepolia/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /copy inspection link/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /record heartbeat|update policy|fund vault|withdraw|register keeperhub/i })).not.toBeInTheDocument();
+  });
+
   it("downloads a point-in-time audit manifest from the verified vault", async () => {
     const createObjectUrl = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:lastwish-audit");
     const revokeObjectUrl = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
@@ -241,6 +316,19 @@ describe("DashboardApp async action identity", () => {
     expect(createObjectUrl.mock.calls[0]?.[0]).toBeInstanceOf(Blob);
     expect(linkClick).toHaveBeenCalledOnce();
     expect(revokeObjectUrl).toHaveBeenCalledWith("blob:lastwish-audit");
+  });
+
+  it("copies only a canonical public vault inspection URL", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    window.history.replaceState(null, "", "/dashboard?token=secret-value#private-state");
+    render(<DashboardApp />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /copy inspection link/i }));
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(`${window.location.origin}/dashboard?vault=${vault}`));
+    expect(writeText.mock.calls[0]?.[0]).not.toMatch(/secret|private|workflow|recovery|label/i);
+    expect(screen.getByText(/contains only this public vault address/i)).toBeInTheDocument();
   });
 
   it("retains an ambiguous wallet hash, blocks another write, and reconciles it read-only", async () => {

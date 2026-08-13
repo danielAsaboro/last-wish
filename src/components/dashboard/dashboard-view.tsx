@@ -51,6 +51,7 @@ export type DashboardViewProps = {
   onRefreshReadiness?(): void;
   onReconcileWalletTransaction?(): void;
   onExportAudit?(): void;
+  onCopyInspectionLink?(): void;
   onAction(action: DashboardAction): void;
   children?: React.ReactNode;
 };
@@ -76,7 +77,7 @@ export function DashboardView(props: DashboardViewProps) {
     );
   }
 
-  if (props.connection === "wrong-network") {
+  if (props.connection === "wrong-network" && !props.vaultAddress) {
     return (
       <DashboardFrame>
         <section className="connect-panel warning-panel">
@@ -90,15 +91,19 @@ export function DashboardView(props: DashboardViewProps) {
   }
 
   const vaultResolution = props.vaultResolution ?? (props.vaultAddress ? "ready" : "empty");
+  const viewRole: DashboardRole = props.connection === "wrong-network" ? "observer" : props.role;
 
   return (
     <DashboardFrame>
       <header className="dashboard-titlebar">
         <div><p className="eyebrow">Vault command center</p><h1>Succession policy</h1></div>
-        <div className="wallet-chip"><span className="live-dot" />{shorten(props.account)}<small>{props.role} · {props.chainName}</small></div>
+        <div className="wallet-chip"><span className="live-dot" />{shorten(props.account)}<small>{viewRole} · {props.chainName}</small></div>
       </header>
 
-      {!props.account && <section className="observer-banner">
+      {props.connection === "wrong-network" ? <section className="observer-banner warning-panel">
+        <div><p className="eyebrow">Wallet network mismatch</p><strong>Read-only inspection remains available.</strong><span>These vault reads come from {props.chainName}. Switch your wallet before any role-authorized action can appear.</span></div>
+        <div className="observer-actions"><button type="button" onClick={props.onSwitchNetwork}>Switch to {props.chainName}</button></div>
+      </section> : !props.account && <section className="observer-banner">
         <div><p className="eyebrow">Read-only inspection</p><strong>No wallet is connected.</strong><span>Vault state, contract events, and reconciled evidence remain available. Connect only when you need a role-authorized action.</span></div>
         <div className="observer-actions">
           <button type="button" disabled={props.walletAvailability === "unavailable"} onClick={props.onConnect}>Connect wallet to act</button>
@@ -131,22 +136,22 @@ export function DashboardView(props: DashboardViewProps) {
             <div className="vault-state-card">
               <div className="card-head"><span>Current state</span><span className={`status-pill status-${props.status.toLowerCase()}`}>{props.status.replace("_", " ")}</span></div>
               <strong>{props.balanceLabel}</strong><small>Vault balance · read from {props.chainName}</small>
-              <div className="address-line"><code>{shorten(props.vaultAddress, 10)}</code><span>Policy v{props.policyVersion}</span></div>
+              <div className="address-line"><code>{shorten(props.vaultAddress, 10)}</code><span>Policy v{props.policyVersion}</span>{props.onCopyInspectionLink && <button type="button" onClick={props.onCopyInspectionLink}>Copy inspection link</button>}</div>
               {props.automation && <AutomationEvidence health={props.automation} readiness={props.readiness} coverage={props.evidenceCoverage} evidenceRefresh={props.evidenceRefresh} currentVaultEvidence={props.currentVaultEvidence} onRefreshEvidence={props.onRefreshEvidence} onRefreshReadiness={props.onRefreshReadiness} />}
             </div>
             <div className="quick-actions" aria-label="Available vault actions">
-              {props.role === "owner" && props.status === "ACTIVE" && <>
+              {viewRole === "owner" && props.status === "ACTIVE" && <>
                 <ActionButton action="heartbeat" label="Record heartbeat" {...props} />
                 <ActionButton action="update-policy" label="Update policy" {...props} />
                 {props.lifecycle?.phase !== "OPEN_ELIGIBLE" && <ActionButton action="withdraw" label="Withdraw" {...props} />}
                 <ActionButton action="fund" label="Fund vault" {...props} />
               </>}
-              {props.role === "owner" && ["PENDING", "VETOED", "READY"].includes(props.status) && <ActionButton action="heartbeat" label="Reactivate vault" {...props} />}
-              {props.role === "guardian" && props.status === "PENDING" && <ActionButton action="veto" label="Veto settlement" {...props} />}
+              {viewRole === "owner" && ["PENDING", "VETOED", "READY"].includes(props.status) && <ActionButton action="heartbeat" label="Reactivate vault" {...props} />}
+              {viewRole === "guardian" && props.status === "PENDING" && <ActionButton action="veto" label="Veto settlement" {...props} />}
               {props.status === "READY" && <p className="completed-action">KeeperHub can finalize now · owner may still reactivate</p>}
-              {props.role === "beneficiary" && props.status === "SETTLED" && props.canClaim && <ActionButton action="claim" label="Claim allocation" {...props} />}
-              {props.role === "beneficiary" && props.status === "SETTLED" && !props.canClaim && <p className="completed-action">Allocation already claimed ✓</p>}
-              {props.role === "owner" && props.status !== "SETTLED" && props.canRegisterAutomation && props.readiness?.status === "ready" && <ActionButton action="register" label="Register KeeperHub" {...props} />}
+              {viewRole === "beneficiary" && props.status === "SETTLED" && props.canClaim && <ActionButton action="claim" label="Claim allocation" {...props} />}
+              {viewRole === "beneficiary" && props.status === "SETTLED" && !props.canClaim && <p className="completed-action">Allocation already claimed ✓</p>}
+              {viewRole === "owner" && props.status !== "SETTLED" && props.canRegisterAutomation && props.readiness?.status === "ready" && <ActionButton action="register" label="Register KeeperHub" {...props} />}
             </div>
           </section>
 

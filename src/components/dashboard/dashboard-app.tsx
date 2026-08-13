@@ -26,6 +26,7 @@ import { buildAuditTimeline, type ChainAuditEvent } from "@/lib/audit/timeline";
 import { parseCopilotSuccessResponse } from "@/lib/ai/policy-copilot-schema";
 import { factoryAbi, vaultAbi } from "@/lib/contracts/abi";
 import { AbortableRequestGeneration, isVerifiedVaultActionTarget, shouldApplyEvidenceResponse } from "@/lib/dashboard/async-guards";
+import { buildVaultInspectionUrl, readVaultLinkFromUrl, replaceVaultInUrl } from "@/lib/dashboard/vault-link";
 import { buildWorkflowAuthorizationMessage } from "@/lib/keeperhub/authorization";
 import { deriveAutomationHealth, parseKeeperHubEvidenceResponse, type DiscoveredWorkflowRegistration } from "@/lib/keeperhub/evidence";
 import { keeperHubRegistrationSuccessCopy } from "@/lib/keeperhub/registration-copy";
@@ -248,6 +249,7 @@ export function DashboardApp() {
   }, []);
 
   const activateVault = useCallback((address: Address) => {
+    replaceVaultInUrl(window.location.href, address, window.history);
     if (activeVaultRef.current?.toLowerCase() === address.toLowerCase()) return;
     selectionEpoch.current += 1;
     actionEpoch.current += 1;
@@ -267,6 +269,12 @@ export function DashboardApp() {
 
   useEffect(() => {
     const restore = window.setTimeout(() => {
+      const linked = readVaultLinkFromUrl(window.location.href);
+      if (linked.state === "valid") { activateVault(linked.address); return; }
+      if (linked.state === "invalid") {
+        setNotice({ tone: "danger", text: "The shared vault address is invalid. Check the link or enter a factory-created vault address." });
+        return;
+      }
       const saved = window.localStorage.getItem(`lastwish:vault:${preferredChain.id}`);
       if (saved && isAddress(saved)) activateVault(getAddress(saved));
     }, 0);
@@ -462,21 +470,24 @@ export function DashboardApp() {
   }, [refreshVault]);
 
   useEffect(() => {
-    if (vaultAddress || !activeAccount || !publicClient || !factoryAddress || !isAddress(factoryAddress)) return;
+    if (vaultAddress || readVaultLinkFromUrl(window.location.href).state !== "absent" || !activeAccount || !publicClient || !factoryAddress || !isAddress(factoryAddress)) return;
+    let cancelled = false;
+    const discoveryAccount = activeAccount;
     const discovery = window.setTimeout(async () => {
       try {
         const existing = await publicClient.readContract({
           address: getAddress(factoryAddress),
           abi: factoryAbi,
           functionName: "vaultOf",
-          args: [activeAccount],
+          args: [discoveryAccount],
         });
-        if (existing !== zeroAddress) activateVault(existing);
+        const currentAccount = accountRef.current;
+        if (!cancelled && currentAccount?.toLowerCase() === discoveryAccount.toLowerCase() && existing !== zeroAddress && !activeVaultRef.current) activateVault(existing);
       } catch {
         // A missing or incompatible factory is surfaced only when the user tries to deploy.
       }
     }, 0);
-    return () => window.clearTimeout(discovery);
+    return () => { cancelled = true; window.clearTimeout(discovery); };
   }, [activeAccount, activateVault, publicClient, vaultAddress]);
 
   const refreshEvidence = useCallback(async () => {
@@ -910,6 +921,21 @@ export function DashboardApp() {
     }, generatedAt));
   }
 
+  async function copyInspectionLink() {
+    const target = currentVerifiedVault();
+    if (!target) {
+      setNotice({ tone: "warning", text: "Wait for factory provenance verification before sharing this vault." });
+      return;
+    }
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error("Clipboard unavailable");
+      await navigator.clipboard.writeText(buildVaultInspectionUrl(window.location.href, target.address));
+      if (currentVerifiedVault(target.address)) setNotice({ tone: "success", text: "Inspection link copied. It contains only this public vault address." });
+    } catch {
+      if (currentVerifiedVault(target.address)) setNotice({ tone: "warning", text: "Could not copy the inspection link. Copy the current dashboard URL instead." });
+    }
+  }
+
   return <DashboardView
     connection={connection}
     account={activeAccount}
@@ -948,6 +974,7 @@ export function DashboardApp() {
     onRefreshReadiness={() => void refreshReadiness()}
     onReconcileWalletTransaction={() => void reconcileWalletTransaction()}
     onExportAudit={vaultResolution.state === "ready" && vault ? exportAudit : undefined}
+    onCopyInspectionLink={vaultResolution.state === "ready" && vault ? () => void copyInspectionLink() : undefined}
     onAction={handleAction}
   >
     <VaultWorkspace

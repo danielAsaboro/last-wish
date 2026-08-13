@@ -13,6 +13,7 @@ LastWish is not a legal will, proof-of-death service, probate replacement, or ju
 - Deterministic allocation with final-recipient rounding and one-time pull claims
 - Injected EVM wallet connection with Base Sepolia preference and Sepolia fallback
 - Factory-verified read-only vault inspection and audit export without requiring wallet connection
+- Privacy-minimal `?vault=` inspection links that share only the public vault address
 - Role-sensitive owner, guardian, beneficiary, and observer controls
 - Exact heartbeat/grace lifecycle deadlines with contract-gated next-action guidance
 - Owner-signed KeeperHub workflow registration with factory provenance, policy-bound calls, stale-workflow retirement, duplicate reconciliation, disabled-first simulation, and explicit activation
