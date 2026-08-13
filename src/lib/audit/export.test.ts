@@ -70,7 +70,7 @@ describe("audit export", () => {
         beneficiaries: [{ displayLabel: "Ada", displayLabelSource: "local_display_metadata", shareBps: 10_000 }],
       },
       chainEvidence: { coverage: { state: "fresh", indexedThroughBlock: "42" }, events: [{ actor: "0x1111111111111111111111111111111111111111", amountWei: "5" }] },
-      evidenceCompleteness: { status: "recovery_required" },
+      verificationStatus: { status: "recovery_required" },
       keeperHubEvidence: {
         scope: "recent_keeperhub_window_only",
         reconciliation: { refreshState: "stale", currentVaultEvidence: "stale_with_success", automationState: "healthy" },
@@ -78,7 +78,7 @@ describe("audit export", () => {
       },
       walletRecovery: { action: "heartbeat", transactionHash: `0x${"b".repeat(64)}` },
     });
-    expect(manifest.evidenceCompleteness.checks).toEqual(expect.arrayContaining([
+    expect(manifest.verificationStatus.checks).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: "factory_provenance", status: "verified" }),
       expect.objectContaining({ id: "unresolved_writes", status: "action_required" }),
     ]));

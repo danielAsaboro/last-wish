@@ -155,9 +155,9 @@ describe("DashboardView", () => {
     expect(screen.queryByText(/no indexed events yet/i)).not.toBeInTheDocument();
   });
 
-  it("summarizes evidence completeness without hiding partial or recovery states", () => {
-    const { rerender } = render(<DashboardView {...baseProps} evidenceCompleteness={{
-      status: "complete",
+  it("shows factual verification status without hiding incomplete or recovery states", () => {
+    const { rerender } = render(<DashboardView {...baseProps} verificationStatus={{
+      status: "verified",
       checks: [
         { id: "factory_provenance", label: "Factory provenance", status: "verified", detail: "Verified." },
         { id: "chain_history", label: "Chain history", status: "verified", detail: "Indexed." },
@@ -165,14 +165,14 @@ describe("DashboardView", () => {
         { id: "unresolved_writes", label: "Unresolved writes", status: "verified", detail: "None." },
       ],
     }} />);
-    expect(screen.getByText(/evidence bundle is complete/i)).toBeInTheDocument();
-    expect(screen.getByText(/4 of 4 checks verified/i)).toBeInTheDocument();
+    expect(screen.getByText(/verification status: all current checks verified/i)).toBeInTheDocument();
+    expect(screen.getByText(/4 of 4 current checks verified/i)).toBeInTheDocument();
 
-    rerender(<DashboardView {...baseProps} evidenceCompleteness={{
+    rerender(<DashboardView {...baseProps} verificationStatus={{
       status: "recovery_required",
       checks: [{ id: "unresolved_writes", label: "Unresolved writes", status: "action_required", detail: "Reconcile the submitted hash." }],
     }} />);
-    expect(screen.getByText(/evidence needs reconciliation/i)).toBeInTheDocument();
+    expect(screen.getByText(/verification status: reconciliation required/i)).toBeInTheDocument();
     expect(screen.getByText(/reconcile the submitted hash/i)).toBeInTheDocument();
   });
 

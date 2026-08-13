@@ -23,7 +23,7 @@ import { buildChainAuditEvents } from "@/lib/audit/chain-events";
 import { readEventHistoryInWindows } from "@/lib/audit/event-indexer";
 import { buildAuditExportManifest, downloadAuditExport } from "@/lib/audit/export";
 import { buildAuditTimeline, type ChainAuditEvent } from "@/lib/audit/timeline";
-import { deriveEvidenceCompleteness } from "@/lib/audit/completeness";
+import { deriveVerificationStatus } from "@/lib/audit/completeness";
 import { parseCopilotSuccessResponse } from "@/lib/ai/policy-copilot-schema";
 import { factoryAbi, vaultAbi } from "@/lib/contracts/abi";
 import { AbortableRequestGeneration, isVerifiedVaultActionTarget, shouldApplyEvidenceResponse } from "@/lib/dashboard/async-guards";
@@ -604,7 +604,7 @@ export function DashboardApp() {
     currentVaultEvidence,
     automation: automationHealth.state,
   });
-  const evidenceCompleteness = useMemo(() => deriveEvidenceCompleteness({
+  const verificationStatus = useMemo(() => deriveVerificationStatus({
     provenanceVerified: vaultSnapshotMatches,
     auditCoverage: auditIndexCoverage,
     refreshState: evidenceRefresh.state,
@@ -965,7 +965,7 @@ export function DashboardApp() {
     canClaim={Boolean(activeAccount && vault?.beneficiaries.some((beneficiary) => beneficiary.address.toLowerCase() === activeAccount.toLowerCase() && beneficiary.claimableWei > 0n))}
     auditItems={auditItems}
     auditIndexCoverage={auditIndexCoverage}
-    evidenceCompleteness={evidenceCompleteness}
+    verificationStatus={verificationStatus}
     pendingAction={pendingAction}
     message={notice}
     automation={automationHealth}

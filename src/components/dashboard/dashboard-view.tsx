@@ -1,7 +1,7 @@
 import Link from "next/link";
 
 import type { AuditTimelineItem } from "@/lib/audit/timeline";
-import type { EvidenceCompleteness } from "@/lib/audit/completeness";
+import type { VerificationStatus } from "@/lib/audit/completeness";
 import type { AutomationHealth, DiscoveredWorkflowRegistration } from "@/lib/keeperhub/evidence";
 import type { CurrentVaultEvidence } from "@/lib/keeperhub/registration-gate";
 import type { KeeperHubReadiness } from "@/lib/keeperhub/readiness";
@@ -38,7 +38,7 @@ export type DashboardViewProps = {
   canClaim: boolean;
   auditItems: AuditTimelineItem[];
   auditIndexCoverage: AuditIndexCoverage;
-  evidenceCompleteness?: EvidenceCompleteness;
+  verificationStatus?: VerificationStatus;
   pendingAction: DashboardAction | null;
   message: { tone: "success" | "warning" | "danger"; text: string } | null;
   automation?: AutomationHealth;
@@ -173,7 +173,7 @@ export function DashboardView(props: DashboardViewProps) {
 
             <article className="panel audit-panel">
               <div className="panel-heading"><div><p className="eyebrow">Evidence, not activity</p><h2>Audit trail</h2></div><div className="audit-heading-actions"><span>{props.auditItems.length}</span>{props.onExportAudit && <button type="button" onClick={props.onExportAudit}>Export audit JSON</button>}</div></div>
-              {props.evidenceCompleteness && <EvidenceCompletenessCard completeness={props.evidenceCompleteness} />}
+              {props.verificationStatus && <VerificationStatusCard verification={props.verificationStatus} />}
               <AuditCoverage coverage={props.auditIndexCoverage} />
               {props.auditItems.length === 0 ? <div className="empty-state"><span>◎</span><p>{auditEmptyCopy(props.auditIndexCoverage)}</p></div> :
                 <ol className="audit-list">{props.auditItems.map((item) => <AuditTimelineRow key={item.id} item={item} chainName={props.chainName} />)}</ol>}
@@ -185,14 +185,14 @@ export function DashboardView(props: DashboardViewProps) {
   );
 }
 
-function EvidenceCompletenessCard({ completeness }: { completeness: EvidenceCompleteness }) {
-  const verified = completeness.checks.filter((check) => check.status === "verified").length;
-  const title = completeness.status === "complete"
-    ? "Evidence bundle is complete"
-    : completeness.status === "recovery_required" ? "Evidence needs reconciliation" : "Evidence bundle is partial";
-  return <details className={`evidence-completeness completeness-${completeness.status}`} open={completeness.status === "recovery_required"}>
-    <summary><span><strong>{title}</strong><small>{verified} of {completeness.checks.length} checks verified</small></span></summary>
-    <ul>{completeness.checks.map((check) => <li key={check.id} className={`check-${check.status}`}><span aria-hidden="true">{check.status === "verified" ? "✓" : check.status === "action_required" ? "!" : "·"}</span><div><strong>{check.label}</strong><small>{check.detail}</small></div></li>)}</ul>
+function VerificationStatusCard({ verification }: { verification: VerificationStatus }) {
+  const verified = verification.checks.filter((check) => check.status === "verified").length;
+  const title = verification.status === "verified"
+    ? "Verification status: all current checks verified"
+    : verification.status === "recovery_required" ? "Verification status: reconciliation required" : "Verification status: checks incomplete";
+  return <details className={`verification-status verification-${verification.status}`} open={verification.status === "recovery_required"}>
+    <summary><span><strong>{title}</strong><small>{verified} of {verification.checks.length} current checks verified</small></span></summary>
+    <ul>{verification.checks.map((check) => <li key={check.id} className={`check-${check.status}`}><span aria-hidden="true">{check.status === "verified" ? "✓" : check.status === "action_required" ? "!" : "·"}</span><div><strong>{check.label}</strong><small>{check.detail}</small></div></li>)}</ul>
   </details>;
 }
 
