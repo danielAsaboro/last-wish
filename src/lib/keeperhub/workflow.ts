@@ -45,7 +45,7 @@ type WorkflowAction = "open" | "finalize";
 export type KeeperHubWorkflowNode = {
   id: string;
   type: "trigger" | "action";
-  data: { type: "trigger" | "action"; label: string; enabled?: boolean; status?: string; config: Record<string, string> };
+  data: { type: "trigger" | "action"; label: string; enabled?: boolean; status?: string; config: Record<string, unknown> };
 };
 
 export type KeeperHubWorkflowDefinition = {

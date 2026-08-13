@@ -25,8 +25,9 @@ import { buildAuditExportManifest, downloadAuditExport } from "@/lib/audit/expor
 import { buildAuditTimeline, type ChainAuditEvent } from "@/lib/audit/timeline";
 import { deriveVerificationStatus } from "@/lib/audit/completeness";
 import { parseCopilotSuccessResponse } from "@/lib/ai/policy-copilot-schema";
+import { loadIntegritySummary, type IntegritySummary } from "@/lib/integrity/client";
 import { factoryAbi, vaultAbi } from "@/lib/contracts/abi";
-import { AbortableRequestGeneration, isVerifiedVaultActionTarget, shouldApplyEvidenceResponse } from "@/lib/dashboard/async-guards";
+import { AbortableRequestGeneration, isVerifiedVaultActionTarget, shouldApplyEvidenceResponse, shouldApplyIntegrityResponse } from "@/lib/dashboard/async-guards";
 import { buildVaultInspectionUrl, readVaultLinkFromUrl, replaceVaultInUrl } from "@/lib/dashboard/vault-link";
 import { buildWorkflowAuthorizationMessage } from "@/lib/keeperhub/authorization";
 import { deriveAutomationHealth, parseKeeperHubEvidenceResponse, type DiscoveredWorkflowRegistration } from "@/lib/keeperhub/evidence";
@@ -147,12 +148,14 @@ export function DashboardApp() {
   const [transactionProgress, setTransactionProgress] = useState<WalletTransactionProgress>();
   const [walletRecovery, setWalletRecovery] = useState<WalletRecoveryContext>();
   const [walletRecoveryHydrated, setWalletRecoveryHydrated] = useState(false);
+  const [integrityReport, setIntegrityReport] = useState<{ state: "loading" | "unavailable" } | ({ state: "available" } & IntegritySummary)>({ state: "unavailable" });
   const blockTimestampCache = useRef(new Map<bigint, bigint>());
   const auditHistoryCache = useRef(new Map<string, AuditHistoryCacheEntry>());
   const activeVaultRef = useRef<Address | undefined>(undefined);
   const vaultRef = useRef<LoadedVault | undefined>(undefined);
   const vaultRequestGuard = useRef(new AbortableRequestGeneration());
   const evidenceRequestGuard = useRef(new AbortableRequestGeneration());
+  const integrityRequestGuard = useRef(new AbortableRequestGeneration());
   const selectionEpoch = useRef(0);
   const actionEpoch = useRef(0);
   const evidenceGeneration = useRef(0);
@@ -163,6 +166,31 @@ export function DashboardApp() {
   const automationHealthRef = useRef(deriveAutomationHealth([]));
   const lastSuccessfulEvidenceRef = useRef<{ vault: Address; policyVersion: bigint } | undefined>(undefined);
   const walletRecoveryRef = useRef<WalletRecoveryContext | undefined>(undefined);
+
+  useEffect(() => {
+    const guard = integrityRequestGuard.current;
+    if (!vault || vaultResolution.state !== "ready") {
+      guard.invalidate();
+      void Promise.resolve().then(() => {
+        if (!activeVaultRef.current) setIntegrityReport({ state: "unavailable" });
+      });
+      return;
+    }
+    const token = guard.begin({ vault: vault.address });
+    void Promise.resolve().then(() => {
+      if (guard.isCurrent(token)) setIntegrityReport({ state: "loading" });
+    });
+    void loadIntegritySummary(preferredChain.id, vault.address, fetch, token.signal)
+      .then((summary) => {
+        if (shouldApplyIntegrityResponse(token, guard, preferredChain.id, activeVaultRef.current, summary.chainId, summary.vaultAddress)) {
+          setIntegrityReport({ state: "available", ...summary });
+        }
+      })
+      .catch(() => {
+        if (guard.isCurrent(token)) setIntegrityReport({ state: "unavailable" });
+      });
+    return () => guard.invalidate();
+  }, [vault, vaultResolution.state]);
 
   function persistWalletRecovery(next?: WalletRecoveryContext) {
     try {
@@ -983,6 +1011,7 @@ export function DashboardApp() {
     transactionProgress={transactionProgress}
     walletRecovery={walletRecovery}
     walletWritesBlocked={!walletRecoveryHydrated || Boolean(walletRecovery)}
+    integrityReport={integrityReport}
     onConnect={() => {
       const connector = selectPreferredWalletConnector(connectors);
       if (!connector) { setNotice({ tone: "danger", text: "No compatible injected EVM wallet is available. Install one and refresh this page." }); return; }

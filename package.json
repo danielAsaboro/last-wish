@@ -9,7 +9,11 @@
     "start": "next start",
     "lint": "eslint",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "keeperhub:validate": "npx tsx scripts/keeperhub-workflow.ts validate",
+    "keeperhub:publish": "npx tsx scripts/keeperhub-workflow.ts publish",
+    "keeperhub:inspect": "npx tsx scripts/keeperhub-workflow.ts inspect",
+    "keeperhub:mcp": "node scripts/keeperhub-mcp-inspect.mjs"
   },
   "dependencies": {
     "@ai-sdk/openai": "4.0.41",
@@ -37,6 +41,7 @@
     "eslint-config-next": "16.3.0",
     "jsdom": "30.0.1",
     "tailwindcss": "^4",
+    "tsx": "^4.23.12",
     "typescript": "^5",
     "vitest": "4.1.10"
   }

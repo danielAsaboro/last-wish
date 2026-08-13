@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { AbortableRequestGeneration, isVerifiedVaultActionTarget, shouldApplyEvidenceResponse, shouldApplyVaultBlock } from "./async-guards";
+import { AbortableRequestGeneration, isVerifiedVaultActionTarget, shouldApplyEvidenceResponse, shouldApplyIntegrityResponse, shouldApplyVaultBlock } from "./async-guards";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -40,5 +40,16 @@ describe("dashboard async and vault-target guards", () => {
     expect(isVerifiedVaultActionTarget(vaultA, snapshot, factory)).toBe(true);
     expect(isVerifiedVaultActionTarget(vaultB, snapshot, factory)).toBe(false);
     expect(isVerifiedVaultActionTarget(vaultA, snapshot, "0x4444444444444444444444444444444444444444")).toBe(false);
+  });
+
+  it("rejects a late integrity report after the active vault changes", () => {
+    const guard = new AbortableRequestGeneration();
+    const vaultA = "0x1111111111111111111111111111111111111111";
+    const vaultB = "0x2222222222222222222222222222222222222222";
+    const tokenA = guard.begin({ vault: vaultA });
+    const tokenB = guard.begin({ vault: vaultB });
+    expect(shouldApplyIntegrityResponse(tokenA, guard, 84532, vaultB, 84532, vaultA)).toBe(false);
+    expect(shouldApplyIntegrityResponse(tokenB, guard, 84532, vaultB, 84532, vaultB)).toBe(true);
+    expect(shouldApplyIntegrityResponse(tokenB, guard, 84532, vaultB, 11155111, vaultB)).toBe(false);
   });
 });

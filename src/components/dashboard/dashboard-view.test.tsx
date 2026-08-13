@@ -37,6 +37,14 @@ const baseProps: DashboardViewProps = {
 };
 
 describe("DashboardView", () => {
+  it("shows only factual local verification without claiming unavailable paid access", () => {
+    render(<DashboardView {...baseProps} integrityReport={{ state: "available", chainId: 84532, vaultAddress: baseProps.vaultAddress!, reportHash: `0x${"a".repeat(64)}`, observedBlockNumber: "42", workflowCount: 2, auditState: "fresh", verificationStatus: "verified" }} />);
+    expect(screen.getByRole("heading", { name: /verification status/i })).toBeInTheDocument();
+    expect(screen.getByText(/read-only report generated from current configured sources/i)).toBeInTheDocument();
+    expect(screen.queryByText(/hosted mcp|x402|mpp|paid agent access/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /pay|purchase/i })).not.toBeInTheDocument();
+  });
+
   it("exposes the brand link as a single clear home destination", () => {
     render(<DashboardView {...baseProps} />);
 

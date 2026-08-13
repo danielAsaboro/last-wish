@@ -48,6 +48,9 @@ export type DashboardViewProps = {
   transactionProgress?: WalletTransactionProgress;
   walletRecovery?: WalletTransactionRecovery;
   walletWritesBlocked?: boolean;
+  integrityReport?:
+    | { state: "loading" | "unavailable" }
+    | ({ state: "available" } & import("@/lib/integrity/client").IntegritySummary);
   onConnect(): void;
   onSwitchNetwork(): void;
   onRefreshEvidence?(): void;
@@ -160,6 +163,8 @@ export function DashboardView(props: DashboardViewProps) {
 
           {props.lifecycle && <LifecycleCard lifecycle={props.lifecycle} />}
 
+          <IntegrityReportCard report={props.integrityReport} />
+
           <section className="dashboard-grid">
             <article className="panel">
               <div className="panel-heading"><div><p className="eyebrow">Fixed allocation</p><h2>Beneficiaries</h2></div><span>{props.beneficiaries.length}</span></div>
@@ -184,6 +189,16 @@ export function DashboardView(props: DashboardViewProps) {
       ) : <section className="empty-vault"><p className="eyebrow">No vault loaded</p><h2>Create a policy or load an existing vault.</h2><p>Every value shown after loading comes from the connected chain.</p></section>}
     </DashboardFrame>
   );
+}
+
+function IntegrityReportCard({ report }: { report: DashboardViewProps["integrityReport"] }) {
+  return <section className="integrity-report panel">
+    <div className="panel-heading"><div><p className="eyebrow">Point-in-time read-only evidence</p><h2>Verification status</h2></div><span>{report?.state === "available" ? report.verificationStatus.replace("_", " ") : report?.state ?? "idle"}</span></div>
+    {report?.state === "available" ? <>
+      <p>Read-only report generated from current configured sources at block {report.observedBlockNumber}. It found {report.workflowCount} KeeperHub workflow{report.workflowCount === 1 ? "" : "s"}; chain-audit coverage is {report.auditState}.</p>
+      <code>{report.reportHash}</code>
+    </> : <p>{report?.state === "loading" ? "Generating the current read-only report…" : "A current integrity report is unavailable."}</p>}
+  </section>;
 }
 
 function VerificationStatusCard({ verification }: { verification: VerificationStatus }) {

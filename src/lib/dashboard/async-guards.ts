@@ -59,6 +59,20 @@ export function shouldApplyEvidenceResponse(
     token.policyVersion === current.responsePolicyVersion;
 }
 
+export function shouldApplyIntegrityResponse(
+  token: RequestGenerationToken,
+  guard: AbortableRequestGeneration,
+  requestedChainId: number,
+  activeVault: string | undefined,
+  responseChainId: number | undefined,
+  responseVault: string | undefined,
+): boolean {
+  return guard.isCurrent(token) &&
+    requestedChainId === responseChainId &&
+    token.vault.toLowerCase() === activeVault?.toLowerCase() &&
+    token.vault.toLowerCase() === responseVault?.toLowerCase();
+}
+
 export function isVerifiedVaultActionTarget(
   activeVault: string | undefined,
   snapshot: { address: string; provenance: { kind: string; factory: string; verifiedAtBlock: bigint }; observedBlockNumber: bigint } | undefined,
