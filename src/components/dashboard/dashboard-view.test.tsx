@@ -323,6 +323,14 @@ describe("DashboardView", () => {
     expect(screen.getByText(/0x4444444444444444444444444444444444444444 · 40%/i)).toBeInTheDocument();
   });
 
+  it("offers a portable audit export from the evidence panel", () => {
+    const onExportAudit = vi.fn();
+    render(<DashboardView {...baseProps} onExportAudit={onExportAudit} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /export audit json/i }));
+    expect(onExportAudit).toHaveBeenCalledOnce();
+  });
+
   it("distinguishes wallet approval from onchain confirmation", () => {
     const { rerender } = render(<DashboardView {...baseProps} pendingAction="heartbeat" transactionProgress={{ label: "Record heartbeat", stage: "AWAITING_SIGNATURE" }} />);
     expect(screen.getByRole("status")).toHaveTextContent(/confirm record heartbeat in your wallet/i);

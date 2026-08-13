@@ -21,6 +21,7 @@ import {
 
 import { buildChainAuditEvents } from "@/lib/audit/chain-events";
 import { readEventHistoryInWindows } from "@/lib/audit/event-indexer";
+import { buildAuditExportManifest, downloadAuditExport } from "@/lib/audit/export";
 import { buildAuditTimeline, type ChainAuditEvent } from "@/lib/audit/timeline";
 import { factoryAbi, vaultAbi } from "@/lib/contracts/abi";
 import { AbortableRequestGeneration, isVerifiedVaultActionTarget, shouldApplyEvidenceResponse } from "@/lib/dashboard/async-guards";
@@ -869,6 +870,32 @@ export function DashboardApp() {
     finally { setPendingAction(null); setTransactionProgress(undefined); }
   }
 
+  function exportAudit() {
+    const target = currentVerifiedVault();
+    if (!target) {
+      setNotice({ tone: "warning", text: "Wait for factory provenance verification before exporting vault evidence." });
+      return;
+    }
+    const generatedAt = new Date().toISOString();
+    downloadAuditExport(buildAuditExportManifest({
+      chain: { id: preferredChain.id, name: preferredChain.name },
+      vault: target,
+      chainEvents: auditEvents,
+      auditIndexCoverage,
+      keeperHub: {
+        scope: executionEvidenceScope,
+        reconciliation: {
+          refreshState: evidenceRefresh.state,
+          currentVaultEvidence,
+          automationState: automationHealth.state,
+        },
+        workflows: discoveredWorkflows,
+        evidence: keeperEvidence,
+      },
+      walletRecovery,
+    }, generatedAt));
+  }
+
   return <DashboardView
     connection={connection}
     account={account}
@@ -906,6 +933,7 @@ export function DashboardApp() {
     onRefreshEvidence={() => void refreshEvidence()}
     onRefreshReadiness={() => void refreshReadiness()}
     onReconcileWalletTransaction={() => void reconcileWalletTransaction()}
+    onExportAudit={vaultResolution.state === "ready" && vault ? exportAudit : undefined}
     onAction={handleAction}
   >
     <VaultWorkspace

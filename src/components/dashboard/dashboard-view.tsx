@@ -50,6 +50,7 @@ export type DashboardViewProps = {
   onRefreshEvidence?(): void;
   onRefreshReadiness?(): void;
   onReconcileWalletTransaction?(): void;
+  onExportAudit?(): void;
   onAction(action: DashboardAction): void;
   children?: React.ReactNode;
 };
@@ -155,7 +156,7 @@ export function DashboardView(props: DashboardViewProps) {
             </article>
 
             <article className="panel audit-panel">
-              <div className="panel-heading"><div><p className="eyebrow">Evidence, not activity</p><h2>Audit trail</h2></div><span>{props.auditItems.length}</span></div>
+              <div className="panel-heading"><div><p className="eyebrow">Evidence, not activity</p><h2>Audit trail</h2></div><div className="audit-heading-actions"><span>{props.auditItems.length}</span>{props.onExportAudit && <button type="button" onClick={props.onExportAudit}>Export audit JSON</button>}</div></div>
               <AuditCoverage coverage={props.auditIndexCoverage} />
               {props.auditItems.length === 0 ? <div className="empty-state"><span>◎</span><p>{auditEmptyCopy(props.auditIndexCoverage)}</p></div> :
                 <ol className="audit-list">{props.auditItems.map((item) => <AuditTimelineRow key={item.id} item={item} chainName={props.chainName} />)}</ol>}

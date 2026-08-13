@@ -209,6 +209,20 @@ describe("DashboardApp async action identity", () => {
     expect(screen.queryByText("Finalize settlement")).not.toBeInTheDocument();
   });
 
+  it("downloads a point-in-time audit manifest from the verified vault", async () => {
+    const createObjectUrl = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:lastwish-audit");
+    const revokeObjectUrl = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+    const linkClick = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+    render(<DashboardApp />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /export audit json/i }));
+
+    expect(createObjectUrl).toHaveBeenCalledOnce();
+    expect(createObjectUrl.mock.calls[0]?.[0]).toBeInstanceOf(Blob);
+    expect(linkClick).toHaveBeenCalledOnce();
+    expect(revokeObjectUrl).toHaveBeenCalledWith("blob:lastwish-audit");
+  });
+
   it("retains an ambiguous wallet hash, blocks another write, and reconciles it read-only", async () => {
     const transactionHash = `0x${"c".repeat(64)}` as const;
     mocks.writeContract.mockResolvedValue(transactionHash);
