@@ -41,6 +41,7 @@ export function buildChainAuditEvents(logs: RawVaultLog[], blockTimestamps: Map<
     const args = log.args ?? {};
     const actorValue = log.eventName ? args[actorKeyByEvent[log.eventName]] : undefined;
     const actor = isAddressValue(actorValue) ? actorValue : undefined;
+    const policyTerms = log.eventName === "PolicyUpdated" ? readPolicyTerms(args) : undefined;
     return [{
       id: `${log.transactionHash}-${log.logIndex ?? index}`,
       type,
@@ -50,8 +51,40 @@ export function buildChainAuditEvents(logs: RawVaultLog[], blockTimestamps: Map<
       actor,
       amountWei: typeof args.amount === "bigint" ? args.amount : typeof args.balance === "bigint" ? args.balance : undefined,
       policyVersion: typeof args.policyVersion === "bigint" ? args.policyVersion : undefined,
+      ...policyTerms,
     }];
   });
+}
+
+function readPolicyTerms(args: Record<string, unknown>): Pick<ChainAuditEvent, "guardian" | "heartbeatInterval" | "gracePeriod" | "allocations"> | undefined {
+  const beneficiaries = Array.isArray(args.beneficiaries) ? args.beneficiaries : undefined;
+  const shares = Array.isArray(args.shares) ? args.shares : undefined;
+  const uniqueBeneficiaries = beneficiaries?.every(isAddressValue)
+    ? new Set(beneficiaries.map((beneficiary) => beneficiary.toLowerCase()))
+    : undefined;
+  if (
+    !isAddressValue(args.guardian) ||
+    typeof args.heartbeatInterval !== "bigint" ||
+    typeof args.gracePeriod !== "bigint" ||
+    args.heartbeatInterval <= 0n ||
+    args.gracePeriod <= 0n ||
+    !beneficiaries ||
+    !shares ||
+    beneficiaries.length === 0 ||
+    beneficiaries.length > 10 ||
+    beneficiaries.length !== shares.length ||
+    !uniqueBeneficiaries ||
+    uniqueBeneficiaries.size !== beneficiaries.length ||
+    uniqueBeneficiaries.has("0x0000000000000000000000000000000000000000") ||
+    !shares.every((share) => typeof share === "number" && Number.isInteger(share) && share > 0) ||
+    shares.reduce<number>((total, share) => total + (share as number), 0) !== 10_000
+  ) return undefined;
+  return {
+    guardian: args.guardian,
+    heartbeatInterval: args.heartbeatInterval,
+    gracePeriod: args.gracePeriod,
+    allocations: beneficiaries.map((beneficiary, index) => ({ beneficiary, shareBps: shares[index] as number })),
+  };
 }
 
 function isAddressValue(value: unknown): value is Address {

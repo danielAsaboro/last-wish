@@ -11,6 +11,10 @@ export type ChainAuditEvent = {
   actor?: Address;
   amountWei?: bigint;
   policyVersion?: bigint;
+  guardian?: Address;
+  heartbeatInterval?: bigint;
+  gracePeriod?: bigint;
+  allocations?: Array<{ beneficiary: Address; shareBps: number }>;
 };
 
 export type AuditTimelineItem = {
@@ -31,6 +35,10 @@ export type AuditTimelineItem = {
   outcome?: "TRANSACTION" | "NO_WRITE";
   policyVersion?: bigint;
   workflowAction?: "open" | "finalize";
+  guardian?: Address;
+  heartbeatInterval?: bigint;
+  gracePeriod?: bigint;
+  allocations?: Array<{ beneficiary: Address; shareBps: number }>;
 };
 
 const chainTitles: Record<ChainAuditEvent["type"], string> = {
@@ -59,6 +67,10 @@ export function buildAuditTimeline(input: {
       transactionHash: event.transactionHash,
       blockNumber: event.blockNumber,
       policyVersion: event.policyVersion,
+      guardian: event.guardian,
+      heartbeatInterval: event.heartbeatInterval,
+      gracePeriod: event.gracePeriod,
+      allocations: event.allocations,
     }));
 
   const keeperItems = input.keeperHub.map<AuditTimelineItem>((evidence) => {
@@ -160,13 +172,25 @@ export function buildAuditTimeline(input: {
 }
 
 function chainEventDetail(event: ChainAuditEvent): string {
+  const policySummary = event.type === "PolicyUpdated" && event.allocations && event.heartbeatInterval !== undefined && event.gracePeriod !== undefined
+    ? `${event.allocations.length} beneficiary allocation${event.allocations.length === 1 ? "" : "s"} · ${formatPolicyDuration(event.heartbeatInterval)} heartbeat · ${formatPolicyDuration(event.gracePeriod)} grace`
+    : undefined;
   const parts = [
+    policySummary,
     event.amountWei === undefined ? undefined : `${formatEther(event.amountWei)} ETH`,
     `confirmed in block ${event.blockNumber}`,
     event.actor ? `actor ${shorten(event.actor)}` : undefined,
   ].filter((part): part is string => part !== undefined);
   const detail = parts.join(" · ");
   return `${event.amountWei === undefined ? detail[0]?.toUpperCase() + detail.slice(1) : detail}.`;
+}
+
+function formatPolicyDuration(seconds: bigint) {
+  const day = 86_400n;
+  const hour = 3_600n;
+  if (seconds % day === 0n) return `${seconds / day}-day`;
+  if (seconds % hour === 0n) return `${seconds / hour}-hour`;
+  return `${seconds}-second`;
 }
 
 function shorten(address: Address) {

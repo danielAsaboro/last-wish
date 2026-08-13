@@ -83,6 +83,33 @@ describe("buildAuditTimeline", () => {
     ]));
   });
 
+  it("keeps reconstructable policy terms on the chain audit item", () => {
+    const timeline = buildAuditTimeline({
+      chainEvents: [{
+        id: "policy-3",
+        type: "PolicyUpdated",
+        timestamp: 100n,
+        blockNumber: 42n,
+        transactionHash: `0x${"4".repeat(64)}`,
+        policyVersion: 3n,
+        guardian: "0x2222222222222222222222222222222222222222",
+        heartbeatInterval: 2_592_000n,
+        gracePeriod: 1_209_600n,
+        allocations: [
+          { beneficiary: "0x3333333333333333333333333333333333333333", shareBps: 6_000 },
+          { beneficiary: "0x4444444444444444444444444444444444444444", shareBps: 4_000 },
+        ],
+      }],
+      keeperHub: [],
+    });
+
+    expect(timeline[0]).toMatchObject({
+      detail: expect.stringMatching(/2 beneficiary allocations.*30-day heartbeat.*14-day grace/i),
+      guardian: "0x2222222222222222222222222222222222222222",
+      allocations: expect.arrayContaining([expect.objectContaining({ shareBps: 6_000 })]),
+    });
+  });
+
   it("turns ambiguous execution into an explicit reconciliation step", () => {
     const timeline = buildAuditTimeline({
       chainEvents: [],

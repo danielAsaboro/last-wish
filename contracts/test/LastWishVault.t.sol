@@ -6,6 +6,16 @@ import {LastWishVault} from "../LastWishVault.sol";
 import {LastWishVaultFactory} from "../LastWishVaultFactory.sol";
 
 contract LastWishVaultTest is Test {
+    event Heartbeat(address indexed owner, uint256 indexed policyVersion, uint256 timestamp);
+    event PolicyUpdated(
+        uint256 indexed policyVersion,
+        address indexed guardian,
+        address indexed actor,
+        uint256 heartbeatInterval,
+        uint256 gracePeriod,
+        address[] beneficiaries,
+        uint16[] shares
+    );
     address internal owner = makeAddr("owner");
     address internal guardian = makeAddr("guardian");
     address internal beneficiaryA = makeAddr("beneficiary-a");
@@ -50,6 +60,16 @@ contract LastWishVaultTest is Test {
 
     function testRecordsItsDeploymentBlockForBoundedAuditIndexing() public view {
         assertEq(vault.deployedAtBlock(), block.number);
+    }
+
+    function testConstructorEmitsCompleteInitialPolicyAndHeartbeat() public {
+        (address[] memory beneficiaries, uint16[] memory shares) = _policy();
+        vm.expectEmit(true, true, true, true);
+        emit PolicyUpdated(1, guardian, owner, 1 days, 2 days, beneficiaries, shares);
+        vm.expectEmit(true, true, false, true);
+        emit Heartbeat(owner, 1, block.timestamp);
+
+        new LastWishVault(owner, guardian, beneficiaries, shares, 1 days, 2 days, false);
     }
 
     function testConstructorRejectsOverlappingOwnerGuardianAndBeneficiaryRoles() public {
@@ -196,6 +216,8 @@ contract LastWishVaultTest is Test {
         shares[0] = 7_000;
         shares[1] = 3_000;
         vm.warp(block.timestamp + 5 minutes);
+        vm.expectEmit(true, true, true, true);
+        emit PolicyUpdated(2, guardian, owner, 2 hours, 3 hours, beneficiaries, shares);
         vm.prank(owner);
         vault.updatePolicy(guardian, beneficiaries, shares, 2 hours, 3 hours, true);
         assertEq(vault.policyVersion(), 2);

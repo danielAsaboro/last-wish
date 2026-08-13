@@ -196,6 +196,7 @@ function auditEmptyCopy(coverage: AuditIndexCoverage) {
 
 function AuditTimelineRow({ item, chainName }: { item: AuditTimelineItem; chainName: string }) {
   const hasKeeperHubIdentity = item.source === "keeperhub" && (item.workflowId || item.executionId);
+  const hasPolicyTerms = item.source === "chain" && item.guardian && item.heartbeatInterval !== undefined && item.gracePeriod !== undefined && item.allocations && item.allocations.length > 0;
 
   return <li className={`tone-${item.tone}`}><span /><div>
     <strong>{item.title}</strong>
@@ -221,6 +222,18 @@ function AuditTimelineRow({ item, chainName }: { item: AuditTimelineItem; chainN
         {item.receiptStatus && <div><dt>Receipt status</dt><dd>{item.receiptStatus}</dd></div>}
         {item.observedVaultStatus && <div><dt>Observed vault status</dt><dd>{item.observedVaultStatus}</dd></div>}
         {item.outcome && <div><dt>Outcome</dt><dd>{item.outcome}</dd></div>}
+      </dl>
+    </details>}
+    {hasPolicyTerms && <details className="evidence-inspector">
+      <summary>Inspect policy terms</summary>
+      <dl className="evidence-inspector-ledger">
+        <div><dt>Guardian</dt><dd><code>{item.guardian}</code></dd></div>
+        <div><dt>Heartbeat interval</dt><dd>{formatDuration(item.heartbeatInterval!)}</dd></div>
+        <div><dt>Grace period</dt><dd>{formatDuration(item.gracePeriod!)}</dd></div>
+        {item.allocations!.map((allocation, index) => <div key={`${allocation.beneficiary}-${index}`}>
+          <dt>Allocation {index + 1}</dt>
+          <dd>{`${allocation.beneficiary} · ${formatShare(allocation.shareBps)}`}</dd>
+        </div>)}
       </dl>
     </details>}
     {item.transactionHash && <a href={`${explorerBase(chainName)}/tx/${item.transactionHash}`} target="_blank" rel="noreferrer">View transaction ↗</a>}
@@ -362,6 +375,22 @@ function formatDeadline(timestamp: bigint) {
 
 function formatTimestamp(timestamp: bigint) {
   return new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short", timeZone: "UTC" }).format(new Date(Number(timestamp) * 1000)) + " UTC";
+}
+
+function formatDuration(seconds: bigint) {
+  const units = [
+    { seconds: 86_400n, label: "day" },
+    { seconds: 3_600n, label: "hour" },
+    { seconds: 60n, label: "minute" },
+  ];
+  const unit = units.find((candidate) => seconds % candidate.seconds === 0n);
+  const value = unit ? seconds / unit.seconds : seconds;
+  const label = unit?.label ?? "second";
+  return `${value} ${label}${value === 1n ? "" : "s"}`;
+}
+
+function formatShare(shareBps: number) {
+  return `${shareBps / 100}%`;
 }
 
 function shortenIdentifier(value: string) {

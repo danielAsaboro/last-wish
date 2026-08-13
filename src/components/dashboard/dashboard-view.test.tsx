@@ -298,6 +298,31 @@ describe("DashboardView", () => {
     expect(screen.queryByText(/^outcome$/i)).not.toBeInTheDocument();
   });
 
+  it("reveals complete onchain policy terms in an accessible inspector", () => {
+    render(<DashboardView {...baseProps} auditItems={[{
+      id: "policy-3",
+      source: "chain",
+      title: "Policy updated",
+      detail: "Policy terms committed onchain.",
+      tone: "neutral",
+      policyVersion: 3n,
+      guardian: "0x2222222222222222222222222222222222222222",
+      heartbeatInterval: 2_592_000n,
+      gracePeriod: 1_209_600n,
+      allocations: [
+        { beneficiary: "0x3333333333333333333333333333333333333333", shareBps: 6_000 },
+        { beneficiary: "0x4444444444444444444444444444444444444444", shareBps: 4_000 },
+      ],
+    }]} />);
+
+    fireEvent.click(screen.getByText(/inspect policy terms/i));
+    expect(screen.getByText("0x2222222222222222222222222222222222222222")).toBeInTheDocument();
+    expect(screen.getByText("30 days")).toBeInTheDocument();
+    expect(screen.getByText("14 days")).toBeInTheDocument();
+    expect(screen.getByText(/0x3333333333333333333333333333333333333333 · 60%/i)).toBeInTheDocument();
+    expect(screen.getByText(/0x4444444444444444444444444444444444444444 · 40%/i)).toBeInTheDocument();
+  });
+
   it("distinguishes wallet approval from onchain confirmation", () => {
     const { rerender } = render(<DashboardView {...baseProps} pendingAction="heartbeat" transactionProgress={{ label: "Record heartbeat", stage: "AWAITING_SIGNATURE" }} />);
     expect(screen.getByRole("status")).toHaveTextContent(/confirm record heartbeat in your wallet/i);

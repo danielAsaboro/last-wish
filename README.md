@@ -17,7 +17,7 @@ LastWish is not a legal will, proof-of-death service, probate replacement, or ju
 - Owner-signed KeeperHub workflow registration with factory provenance, policy-bound calls, stale-workflow retirement, duplicate reconciliation, disabled-first simulation, and explicit activation
 - KeeperHub run history reconciled against its matching execution/write-step log, RPC receipt, expected contract event, and vault state at the receipt block
 - AI SDK 7 Policy Copilot with Zod-structured output; it drafts timing and shares but cannot sign, submit calldata, or decide eligibility
-- Chain and KeeperHub evidence in a unified, timestamped audit trail with policy/action lineage, actors, amounts, blocks, gas, identifiers, and explicit recovery-required outcomes
+- Chain and KeeperHub evidence in a unified, timestamped audit trail with reconstructable policy terms, policy/action lineage, actors, amounts, blocks, gas, identifiers, and explicit recovery-required outcomes
 - Wallet-submitted hashes retained in an explicit in-session recovery ledger; conflicting writes stay disabled until a read-only, target-matched receipt check resolves success or revert
 
 No fake balances, workflow runs, transaction hashes, or receipts are used. If credentials or deployment addresses are absent, the corresponding feature reports that it is unavailable.

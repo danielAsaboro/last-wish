@@ -57,7 +57,15 @@ contract LastWishVault is ReentrancyGuard {
 
     event Deposit(address indexed sender, uint256 amount);
     event Heartbeat(address indexed owner, uint256 indexed policyVersion, uint256 timestamp);
-    event PolicyUpdated(uint256 indexed policyVersion, address indexed guardian, address indexed actor);
+    event PolicyUpdated(
+        uint256 indexed policyVersion,
+        address indexed guardian,
+        address indexed actor,
+        uint256 heartbeatInterval,
+        uint256 gracePeriod,
+        address[] beneficiaries,
+        uint16[] shares
+    );
     event SettlementOpened(uint256 indexed policyVersion, uint256 pendingAt, address indexed caller);
     event SettlementVetoedByGuardian(uint256 indexed policyVersion, address indexed guardian);
     event SettlementFinalized(uint256 indexed policyVersion, uint256 balance, address indexed caller);
@@ -85,6 +93,8 @@ contract LastWishVault is ReentrancyGuard {
         policyVersion = 1;
         _setPolicy(guardian_, beneficiaries_, shares_, heartbeatInterval_, gracePeriod_);
         lastHeartbeat = block.timestamp;
+        emit PolicyUpdated(policyVersion, guardian_, owner_, heartbeatInterval_, gracePeriod_, beneficiaries_, shares_);
+        emit Heartbeat(owner_, policyVersion, block.timestamp);
     }
 
     receive() external payable {
@@ -152,7 +162,9 @@ contract LastWishVault is ReentrancyGuard {
             ++policyVersion;
         }
         lastHeartbeat = block.timestamp;
-        emit PolicyUpdated(policyVersion, guardian_, msg.sender);
+        emit PolicyUpdated(
+            policyVersion, guardian_, msg.sender, heartbeatInterval_, gracePeriod_, beneficiaries_, shares_
+        );
         emit Heartbeat(msg.sender, policyVersion, block.timestamp);
     }
 
