@@ -206,6 +206,8 @@ function AuditTimelineRow({ item, chainName }: { item: AuditTimelineItem; chainN
       {item.timestamp !== undefined && <time dateTime={new Date(Number(item.timestamp) * 1000).toISOString()}>{formatTimestamp(item.timestamp)}</time>}
       {item.blockNumber !== undefined && <span>Block {item.blockNumber.toString()}</span>}
       {item.gasUsed !== undefined && <span>{item.gasUsed.toLocaleString("en-US")} gas</span>}
+      {item.policyVersion !== undefined && <span>Policy v{item.policyVersion.toString()}</span>}
+      {item.workflowAction && <span>{workflowActionLabel(item.workflowAction)}</span>}
       {item.workflowId && <code>{shortenIdentifier(item.workflowId)}</code>}
       {item.executionId && <code>{shortenIdentifier(item.executionId)}</code>}
     </div>
@@ -214,6 +216,8 @@ function AuditTimelineRow({ item, chainName }: { item: AuditTimelineItem; chainN
       <dl className="evidence-inspector-ledger">
         {item.workflowId && <div><dt>Workflow ID</dt><dd><code>{item.workflowId}</code></dd></div>}
         {item.executionId && <div><dt>Execution ID</dt><dd><code>{item.executionId}</code></dd></div>}
+        {item.policyVersion !== undefined && <div><dt>Policy version</dt><dd>{item.policyVersion.toString()}</dd></div>}
+        {item.workflowAction && <div><dt>Workflow action</dt><dd>{workflowActionLabel(item.workflowAction)}</dd></div>}
         {item.receiptStatus && <div><dt>Receipt status</dt><dd>{item.receiptStatus}</dd></div>}
         {item.observedVaultStatus && <div><dt>Observed vault status</dt><dd>{item.observedVaultStatus}</dd></div>}
         {item.outcome && <div><dt>Outcome</dt><dd>{item.outcome}</dd></div>}
@@ -221,6 +225,10 @@ function AuditTimelineRow({ item, chainName }: { item: AuditTimelineItem; chainN
     </details>}
     {item.transactionHash && <a href={`${explorerBase(chainName)}/tx/${item.transactionHash}`} target="_blank" rel="noreferrer">View transaction ↗</a>}
   </div></li>;
+}
+
+function workflowActionLabel(action: "open" | "finalize") {
+  return action === "open" ? "Open settlement" : "Finalize settlement";
 }
 
 function AutomationEvidence({

@@ -87,7 +87,12 @@ describe("POST /api/keeperhub/evidence", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
       configured: true,
-      evidence: expect.arrayContaining([expect.objectContaining({ executionId: "exec_49", workflowId: "wf_current" })]),
+      evidence: expect.arrayContaining([expect.objectContaining({
+        executionId: "exec_49",
+        workflowId: "wf_current",
+        policyVersion: "3",
+        workflowAction: "open",
+      })]),
       workflows: [
         {
           workflowId: "wf_current",
@@ -118,6 +123,44 @@ describe("POST /api/keeperhub/evidence", () => {
       ],
     });
     expect(keeperHub.listWorkflowExecutions).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not let a mismatched execution workflow ID borrow another registration's lineage", async () => {
+    const vault = "0x1111111111111111111111111111111111111111";
+    const currentOpen = buildVaultWorkflows({ chainId: 84532, vault, scheduleCron: "*/5 * * * *", policyVersion: 3n })[0];
+    const staleFinalize = buildVaultWorkflows({ chainId: 84532, vault, scheduleCron: "*/5 * * * *", policyVersion: 2n })[1];
+    rpc.readContract.mockResolvedValueOnce(0).mockResolvedValueOnce(3n);
+    keeperHub.listWorkflows.mockResolvedValue([
+      { id: "wf_current", ...currentOpen, enabled: true, deletedAt: null, deactivatedAt: null },
+      { id: "wf_stale", ...staleFinalize, enabled: false, deletedAt: null, deactivatedAt: null },
+    ]);
+    keeperHub.listWorkflowExecutions.mockImplementation(async (workflowId: string) => workflowId === "wf_current" ? [{
+      id: "exec_mismatched",
+      workflowId: "wf_stale",
+      status: "success",
+      transactionHashes: [],
+    }] : []);
+    keeperHub.getWorkflowExecutionLogs.mockResolvedValue({
+      execution: { id: "exec_mismatched", workflowId: "wf_stale", status: "success" },
+      logs: [],
+    });
+
+    const response = await POST(new Request("http://localhost/api/keeperhub/evidence", {
+      method: "POST",
+      body: JSON.stringify({ chainId: 84532, vault }),
+    }));
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      evidence: [expect.objectContaining({
+        executionId: "exec_mismatched",
+        workflowId: "wf_current",
+        status: "unknown",
+        observedVaultStatus: "RECOVERY_REQUIRED",
+        policyVersion: "3",
+        workflowAction: "open",
+      })],
+    });
   });
 
   it("verifies a transaction only when its vault settlement event has the registration policy version", async () => {

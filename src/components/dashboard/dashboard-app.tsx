@@ -25,7 +25,7 @@ import { buildAuditTimeline, type ChainAuditEvent } from "@/lib/audit/timeline";
 import { factoryAbi, vaultAbi } from "@/lib/contracts/abi";
 import { AbortableRequestGeneration, isVerifiedVaultActionTarget, shouldApplyEvidenceResponse } from "@/lib/dashboard/async-guards";
 import { buildWorkflowAuthorizationMessage } from "@/lib/keeperhub/authorization";
-import { deriveAutomationHealth, type DiscoveredWorkflowRegistration } from "@/lib/keeperhub/evidence";
+import { deriveAutomationHealth, parseKeeperHubEvidenceResponse, type DiscoveredWorkflowRegistration } from "@/lib/keeperhub/evidence";
 import { keeperHubRegistrationSuccessCopy } from "@/lib/keeperhub/registration-copy";
 import { canAuthorizeKeeperHubRegistration, registrationActionStillCurrent, requestKeeperHubRegistrationSignature, type CurrentVaultEvidence, type RegistrationActionContext } from "@/lib/keeperhub/registration-gate";
 import { readinessNextSteps, type KeeperHubReadiness } from "@/lib/keeperhub/readiness";
@@ -485,37 +485,21 @@ export function DashboardApp() {
         signal: token.signal,
       });
       if (!response.ok) throw new Error("KeeperHub evidence refresh was unavailable.");
-      const body = await response.json() as {
-        workflows?: DiscoveredWorkflowRegistration[];
-        chainId?: number;
-        vault?: string;
-        policyVersion?: string;
-        executionEvidenceScope?: "recent_keeperhub_window_only";
-        evidence?: Array<Omit<KeeperHubEvidence, "blockNumber" | "gasUsed" | "timestamp"> & { blockNumber?: string; gasUsed?: string; timestamp?: string }>;
-      };
-      const responsePolicyVersion = body.policyVersion && /^\d+$/.test(body.policyVersion) ? BigInt(body.policyVersion) : undefined;
-      if (!Array.isArray(body.workflows) || !Array.isArray(body.evidence)) {
-        throw new Error("KeeperHub returned invalid evidence data.");
-      }
+      const body = parseKeeperHubEvidenceResponse(await response.json());
       if (!shouldApplyEvidenceResponse(token, evidenceRequestGuard.current, {
         requestedChainId: preferredChain.id,
         activeVault: activeVaultRef.current,
         currentPolicyVersion: vaultRef.current?.policyVersion,
         responseChainId: body.chainId,
         responseVault: body.vault,
-        responsePolicyVersion,
+        responsePolicyVersion: body.policyVersion,
       })) {
         if (token.signal.aborted || !evidenceRequestGuard.current.isCurrent(token)) return;
         throw new Error("KeeperHub evidence did not match the active vault and policy.");
       }
       setDiscoveredWorkflows(body.workflows);
-      setExecutionEvidenceScope(body.executionEvidenceScope ?? "recent_keeperhub_window_only");
-      setKeeperEvidence(body.evidence.map((item) => ({
-        ...item,
-        blockNumber: item.blockNumber === undefined ? undefined : BigInt(item.blockNumber),
-        gasUsed: item.gasUsed === undefined ? undefined : BigInt(item.gasUsed),
-        timestamp: item.timestamp === undefined ? undefined : BigInt(item.timestamp),
-      })));
+      setExecutionEvidenceScope(body.executionEvidenceScope);
+      setKeeperEvidence(body.evidence);
       const successfulContext = { vault: requestedVault, policyVersion: requestedPolicyVersion };
       lastSuccessfulEvidenceRef.current = successfulContext;
       setLastSuccessfulEvidence(successfulContext);

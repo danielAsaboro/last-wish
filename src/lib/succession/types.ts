@@ -58,4 +58,6 @@ export type KeeperHubEvidence = {
   timestamp?: bigint;
   failedNode?: string;
   failureReason?: string;
+  policyVersion?: bigint;
+  workflowAction?: "open" | "finalize";
 };

@@ -55,6 +55,34 @@ describe("buildAuditTimeline", () => {
     });
   });
 
+  it("preserves policy lineage across chain and KeeperHub evidence", () => {
+    const timeline = buildAuditTimeline({
+      chainEvents: [{
+        id: "opened",
+        type: "SettlementOpened",
+        timestamp: 100n,
+        blockNumber: 42n,
+        transactionHash: `0x${"4".repeat(64)}`,
+        policyVersion: 7n,
+      }],
+      keeperHub: [{
+        workflowId: "wf_open",
+        executionId: "exec_open",
+        status: "verified",
+        verified: true,
+        observedVaultStatus: "PENDING",
+        policyVersion: 7n,
+        workflowAction: "open",
+        timestamp: 101n,
+      }],
+    });
+
+    expect(timeline).toEqual(expect.arrayContaining([
+      expect.objectContaining({ source: "chain", policyVersion: 7n }),
+      expect.objectContaining({ source: "keeperhub", policyVersion: 7n, workflowAction: "open" }),
+    ]));
+  });
+
   it("turns ambiguous execution into an explicit reconciliation step", () => {
     const timeline = buildAuditTimeline({
       chainEvents: [],

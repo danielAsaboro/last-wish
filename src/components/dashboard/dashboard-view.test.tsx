@@ -255,6 +255,8 @@ describe("DashboardView", () => {
       executionId: "exec_full_identifier_987654321",
       receiptStatus: "success",
       observedVaultStatus: "PENDING",
+      policyVersion: 7n,
+      workflowAction: "open",
     }]} />);
 
     const inspector = screen.getByText(/inspect keeperhub evidence/i).closest("details");
@@ -264,6 +266,10 @@ describe("DashboardView", () => {
     expect(screen.getByText("wf_full_identifier_123456789")).toBeInTheDocument();
     expect(screen.getByText("exec_full_identifier_987654321")).toBeInTheDocument();
     expect(screen.getByText(/receipt status/i)).toBeInTheDocument();
+    expect(screen.getByText(/policy version/i)).toBeInTheDocument();
+    expect(screen.getByText("7")).toBeInTheDocument();
+    expect(screen.getByText(/workflow action/i)).toBeInTheDocument();
+    expect(screen.getAllByText("Open settlement")).toHaveLength(2);
   });
 
   it("keeps the KeeperHub inspector and unavailable reconciliation fields off chain-only evidence", () => {

@@ -29,6 +29,8 @@ export type AuditTimelineItem = {
   receiptStatus?: string;
   observedVaultStatus?: VaultStatus;
   outcome?: "TRANSACTION" | "NO_WRITE";
+  policyVersion?: bigint;
+  workflowAction?: "open" | "finalize";
 };
 
 const chainTitles: Record<ChainAuditEvent["type"], string> = {
@@ -56,6 +58,7 @@ export function buildAuditTimeline(input: {
       timestamp: event.timestamp,
       transactionHash: event.transactionHash,
       blockNumber: event.blockNumber,
+      policyVersion: event.policyVersion,
     }));
 
   const keeperItems = input.keeperHub.map<AuditTimelineItem>((evidence) => {
@@ -72,6 +75,8 @@ export function buildAuditTimeline(input: {
         receiptStatus: evidence.receiptStatus,
         observedVaultStatus: evidence.observedVaultStatus,
         outcome: evidence.outcome,
+        policyVersion: evidence.policyVersion,
+        workflowAction: evidence.workflowAction,
       };
     }
     if (evidence.status === "unknown" || evidence.observedVaultStatus === "RECOVERY_REQUIRED") {
@@ -91,6 +96,8 @@ export function buildAuditTimeline(input: {
         receiptStatus: evidence.receiptStatus,
         observedVaultStatus: evidence.observedVaultStatus,
         outcome: evidence.outcome,
+        policyVersion: evidence.policyVersion,
+        workflowAction: evidence.workflowAction,
       };
     }
     if (evidence.verified) {
@@ -109,6 +116,8 @@ export function buildAuditTimeline(input: {
         receiptStatus: evidence.receiptStatus,
         observedVaultStatus: evidence.observedVaultStatus,
         outcome: evidence.outcome,
+        policyVersion: evidence.policyVersion,
+        workflowAction: evidence.workflowAction,
       };
     }
     return {
@@ -128,6 +137,8 @@ export function buildAuditTimeline(input: {
       receiptStatus: evidence.receiptStatus,
       observedVaultStatus: evidence.observedVaultStatus,
       outcome: evidence.outcome,
+      policyVersion: evidence.policyVersion,
+      workflowAction: evidence.workflowAction,
     };
   });
 

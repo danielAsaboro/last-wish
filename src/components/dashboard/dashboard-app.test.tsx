@@ -170,6 +170,45 @@ describe("DashboardApp async action identity", () => {
     expect(screen.queryByText(/registered \d+ workflows|condition-gated|exact enabled workflow pair/i)).not.toBeInTheDocument();
   });
 
+  it("rejects malformed KeeperHub policy lineage instead of fabricating an action", async () => {
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/keeperhub/readiness")) return json({ status: "ready", nextStep: "KeeperHub is ready." });
+      if (url.includes("/api/keeperhub/evidence")) return json({
+        configured: true,
+        chainId: 84532,
+        vault,
+        policyVersion: "1",
+        workflows: [{
+          workflowId: "wf_check",
+          name: "Open",
+          policyVersion: "1",
+          action: "open",
+          enabled: true,
+          definitionMatches: true,
+          registrationState: "current",
+          coverage: { runsReturned: 1, providerWindow: "latest_50_non_purged", olderRunsMayExist: false, providerPagination: "unavailable" },
+        }],
+        executionEvidenceScope: "recent_keeperhub_window_only",
+        evidence: [{
+          workflowId: "wf_tampered",
+          executionId: "exec_tampered",
+          status: "verified",
+          verified: true,
+          observedVaultStatus: "SETTLED",
+          policyVersion: "1",
+          workflowAction: "destroy",
+        }],
+      });
+      throw new Error(`Unexpected fetch ${url}`);
+    });
+
+    render(<DashboardApp />);
+
+    expect(await screen.findByText("KeeperHub evidence is unavailable")).toBeInTheDocument();
+    expect(screen.queryByText("Finalize settlement")).not.toBeInTheDocument();
+  });
+
   it("retains an ambiguous wallet hash, blocks another write, and reconciles it read-only", async () => {
     const transactionHash = `0x${"c".repeat(64)}` as const;
     mocks.writeContract.mockResolvedValue(transactionHash);
@@ -920,7 +959,16 @@ describe("DashboardApp async action identity", () => {
         chainId: 84532,
         vault,
         policyVersion: "1",
-        workflows: [],
+        workflows: [{
+          workflowId: "wf_check",
+          name: "Open",
+          policyVersion: "1",
+          action: "open",
+          enabled: true,
+          definitionMatches: true,
+          registrationState: "current",
+          coverage: { runsReturned: 1, providerWindow: "latest_50_non_purged", olderRunsMayExist: false, providerPagination: "unavailable" },
+        }],
         executionEvidenceScope: "recent_keeperhub_window_only",
         evidence: [{
           workflowId: "wf_check",
@@ -930,6 +978,8 @@ describe("DashboardApp async action identity", () => {
           outcome: "NO_WRITE",
           observedVaultStatus: "ACTIVE",
           timestamp: "1800000001",
+          policyVersion: "1",
+          workflowAction: "open",
         }],
       });
       throw new Error(`Unexpected fetch ${url}`);
@@ -939,6 +989,8 @@ describe("DashboardApp async action identity", () => {
 
     expect(await screen.findByText("Owner heartbeat recorded")).toBeInTheDocument();
     expect(await screen.findByText("Eligibility check completed")).toBeInTheDocument();
+    expect(screen.getAllByText("Policy v1")).toHaveLength(2);
+    expect(screen.getAllByText("Open settlement")).toHaveLength(2);
     expect(screen.getByText("Chain history indexed through block 100")).toBeInTheDocument();
 
     await act(async () => { intervalCallbacks[0]?.(); });

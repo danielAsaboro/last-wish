@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { deriveAutomationHealth, type DiscoveredWorkflowRegistration } from "./evidence";
+import { deriveAutomationHealth, parseKeeperHubEvidenceResponse, type DiscoveredWorkflowRegistration } from "./evidence";
 
 const coverage = { runsReturned: 0, providerWindow: "latest_50_non_purged" as const, olderRunsMayExist: false, providerPagination: "unavailable" as const };
 
@@ -19,6 +19,83 @@ function workflow(overrides: Partial<DiscoveredWorkflowRegistration>): Discovere
 }
 
 describe("KeeperHub evidence discovery", () => {
+  const responseWorkflow = {
+    workflowId: "wf_open",
+    name: "Open",
+    policyVersion: "3",
+    action: "open" as const,
+    enabled: true,
+    definitionMatches: true,
+    registrationState: "current" as const,
+    coverage,
+  };
+  const responseEvidence = {
+    workflowId: "wf_open",
+    executionId: "exec_open",
+    status: "verified" as const,
+    verified: true,
+    observedVaultStatus: "PENDING" as const,
+    policyVersion: "3",
+    workflowAction: "open" as const,
+  };
+  const responseBase = {
+    configured: true,
+    chainId: 84532,
+    vault: "0x1111111111111111111111111111111111111111",
+    policyVersion: "3",
+    executionEvidenceScope: "recent_keeperhub_window_only",
+  };
+
+  it("rejects evidence whose lineage contradicts its referenced workflow", () => {
+    expect(() => parseKeeperHubEvidenceResponse({
+      ...responseBase,
+      workflows: [responseWorkflow],
+      evidence: [{ ...responseEvidence, policyVersion: "2", workflowAction: "finalize" }],
+    })).toThrow();
+  });
+
+  it("rejects orphan evidence without a matching workflow registration", () => {
+    expect(() => parseKeeperHubEvidenceResponse({
+      ...responseBase,
+      workflows: [responseWorkflow],
+      evidence: [{ ...responseEvidence, workflowId: "wf_missing" }],
+    })).toThrow();
+  });
+
+  it("rejects ambiguous duplicate workflow identities", () => {
+    expect(() => parseKeeperHubEvidenceResponse({
+      ...responseBase,
+      workflows: [responseWorkflow, { ...responseWorkflow, action: "finalize" }],
+      evidence: [responseEvidence],
+    })).toThrow();
+  });
+
+  it("derives current and stale registration state from the response policy", () => {
+    expect(() => parseKeeperHubEvidenceResponse({
+      ...responseBase,
+      workflows: [{ ...responseWorkflow, policyVersion: "2", registrationState: "current" }],
+      evidence: [],
+    })).toThrow();
+    expect(() => parseKeeperHubEvidenceResponse({
+      ...responseBase,
+      workflows: [{ ...responseWorkflow, registrationState: "stale" }],
+      evidence: [],
+    })).toThrow();
+  });
+
+  it("rejects contradictory verified status semantics", () => {
+    expect(() => parseKeeperHubEvidenceResponse({
+      ...responseBase,
+      workflows: [responseWorkflow],
+      evidence: [{ ...responseEvidence, status: "failed", verified: true }],
+    })).toThrow();
+    expect(() => parseKeeperHubEvidenceResponse({
+      ...responseBase,
+      workflows: [responseWorkflow],
+      evidence: [{ ...responseEvidence, status: "verified", verified: false }],
+    })).toThrow();
+  });
+
   it("requires exactly one enabled current open and finalize workflow", () => {
     const currentOpen = workflow({});
     const currentFinalize = workflow({ workflowId: "wf_finalize", action: "finalize" });

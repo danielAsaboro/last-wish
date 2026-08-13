@@ -69,6 +69,12 @@ export async function POST(request: Request) {
     }> = [];
 
     for (const { workflow, registration } of discovered) {
+      const pushEvidence = (item: KeeperHubEvidence) => evidence.push({
+        ...item,
+        workflowId: workflow.id,
+        policyVersion: registration.policyVersion,
+        workflowAction: registration.action,
+      });
       const expectedStatus: VaultStatus = registration.action === "open" ? "PENDING" : "SETTLED";
       const expectedDefinition = definitionByAction.get(registration.action)!;
       const definitionMatches = registration.policyVersion === policyVersion && workflowGraphMatchesDefinition(workflow, expectedDefinition);
@@ -89,8 +95,18 @@ export async function POST(request: Request) {
         },
       });
       for (const execution of executions) {
+        if (execution.workflowId !== workflow.id) {
+          pushEvidence({
+            workflowId: workflow.id,
+            executionId: execution.id,
+            status: "unknown",
+            verified: false,
+            observedVaultStatus: "RECOVERY_REQUIRED",
+          });
+          continue;
+        }
         if (execution.transactionHashes.length > 1) {
-          evidence.push(classifyWorkflowEvidence(execution, expectedStatus, { observedVaultStatus }));
+          pushEvidence(classifyWorkflowEvidence(execution, expectedStatus, { observedVaultStatus }));
           continue;
         }
         let inspectedLogs: unknown;
@@ -101,7 +117,7 @@ export async function POST(request: Request) {
           const diagnostic = extractWorkflowFailureDiagnostic(inspectedLogs, execution.id, workflow.id);
           if (inspection.kind === "write") transactionHash = inspection.transactionHash;
           else {
-            evidence.push(classifyWorkflowEvidence(execution, expectedStatus, {
+            pushEvidence(classifyWorkflowEvidence(execution, expectedStatus, {
               observedVaultStatus,
               noWriteVerified: definitionMatches && inspection.kind === "no_write",
               ...diagnostic,
@@ -123,7 +139,7 @@ export async function POST(request: Request) {
               log.eventName === expectedEvent &&
               log.args.policyVersion === registration.policyVersion,
           );
-          evidence.push(classifyWorkflowEvidence(execution, expectedStatus, {
+          pushEvidence(classifyWorkflowEvidence(execution, expectedStatus, {
             keeperWriteVerified: verifyKeeperHubWriteLog(
               keeperHubLogs,
               transactionHash,
@@ -139,7 +155,7 @@ export async function POST(request: Request) {
             ...diagnostic,
           }));
         } catch {
-          evidence.push(classifyWorkflowEvidence(execution, expectedStatus, { observedVaultStatus, transactionHash, ...diagnostic }));
+          pushEvidence(classifyWorkflowEvidence(execution, expectedStatus, { observedVaultStatus, transactionHash, ...diagnostic }));
         }
       }
     }
@@ -153,6 +169,8 @@ export async function POST(request: Request) {
       executionEvidenceScope: "recent_keeperhub_window_only",
       evidence: evidence.map((item) => ({
         ...item,
+        policyVersion: item.policyVersion?.toString(),
+        workflowAction: item.workflowAction,
         blockNumber: item.blockNumber?.toString(),
         gasUsed: item.gasUsed?.toString(),
         timestamp: item.timestamp?.toString(),
