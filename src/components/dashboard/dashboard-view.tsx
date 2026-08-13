@@ -1,6 +1,7 @@
 import Link from "next/link";
 
 import type { AuditTimelineItem } from "@/lib/audit/timeline";
+import type { EvidenceCompleteness } from "@/lib/audit/completeness";
 import type { AutomationHealth, DiscoveredWorkflowRegistration } from "@/lib/keeperhub/evidence";
 import type { CurrentVaultEvidence } from "@/lib/keeperhub/registration-gate";
 import type { KeeperHubReadiness } from "@/lib/keeperhub/readiness";
@@ -37,6 +38,7 @@ export type DashboardViewProps = {
   canClaim: boolean;
   auditItems: AuditTimelineItem[];
   auditIndexCoverage: AuditIndexCoverage;
+  evidenceCompleteness?: EvidenceCompleteness;
   pendingAction: DashboardAction | null;
   message: { tone: "success" | "warning" | "danger"; text: string } | null;
   automation?: AutomationHealth;
@@ -171,6 +173,7 @@ export function DashboardView(props: DashboardViewProps) {
 
             <article className="panel audit-panel">
               <div className="panel-heading"><div><p className="eyebrow">Evidence, not activity</p><h2>Audit trail</h2></div><div className="audit-heading-actions"><span>{props.auditItems.length}</span>{props.onExportAudit && <button type="button" onClick={props.onExportAudit}>Export audit JSON</button>}</div></div>
+              {props.evidenceCompleteness && <EvidenceCompletenessCard completeness={props.evidenceCompleteness} />}
               <AuditCoverage coverage={props.auditIndexCoverage} />
               {props.auditItems.length === 0 ? <div className="empty-state"><span>◎</span><p>{auditEmptyCopy(props.auditIndexCoverage)}</p></div> :
                 <ol className="audit-list">{props.auditItems.map((item) => <AuditTimelineRow key={item.id} item={item} chainName={props.chainName} />)}</ol>}
@@ -180,6 +183,17 @@ export function DashboardView(props: DashboardViewProps) {
       ) : <section className="empty-vault"><p className="eyebrow">No vault loaded</p><h2>Create a policy or load an existing vault.</h2><p>Every value shown after loading comes from the connected chain.</p></section>}
     </DashboardFrame>
   );
+}
+
+function EvidenceCompletenessCard({ completeness }: { completeness: EvidenceCompleteness }) {
+  const verified = completeness.checks.filter((check) => check.status === "verified").length;
+  const title = completeness.status === "complete"
+    ? "Evidence bundle is complete"
+    : completeness.status === "recovery_required" ? "Evidence needs reconciliation" : "Evidence bundle is partial";
+  return <details className={`evidence-completeness completeness-${completeness.status}`} open={completeness.status === "recovery_required"}>
+    <summary><span><strong>{title}</strong><small>{verified} of {completeness.checks.length} checks verified</small></span></summary>
+    <ul>{completeness.checks.map((check) => <li key={check.id} className={`check-${check.status}`}><span aria-hidden="true">{check.status === "verified" ? "✓" : check.status === "action_required" ? "!" : "·"}</span><div><strong>{check.label}</strong><small>{check.detail}</small></div></li>)}</ul>
+  </details>;
 }
 
 function AuditCoverage({ coverage }: { coverage: AuditIndexCoverage }) {

@@ -155,6 +155,27 @@ describe("DashboardView", () => {
     expect(screen.queryByText(/no indexed events yet/i)).not.toBeInTheDocument();
   });
 
+  it("summarizes evidence completeness without hiding partial or recovery states", () => {
+    const { rerender } = render(<DashboardView {...baseProps} evidenceCompleteness={{
+      status: "complete",
+      checks: [
+        { id: "factory_provenance", label: "Factory provenance", status: "verified", detail: "Verified." },
+        { id: "chain_history", label: "Chain history", status: "verified", detail: "Indexed." },
+        { id: "keeperhub_reconciliation", label: "KeeperHub reconciliation", status: "verified", detail: "Fresh." },
+        { id: "unresolved_writes", label: "Unresolved writes", status: "verified", detail: "None." },
+      ],
+    }} />);
+    expect(screen.getByText(/evidence bundle is complete/i)).toBeInTheDocument();
+    expect(screen.getByText(/4 of 4 checks verified/i)).toBeInTheDocument();
+
+    rerender(<DashboardView {...baseProps} evidenceCompleteness={{
+      status: "recovery_required",
+      checks: [{ id: "unresolved_writes", label: "Unresolved writes", status: "action_required", detail: "Reconcile the submitted hash." }],
+    }} />);
+    expect(screen.getByText(/evidence needs reconciliation/i)).toBeInTheDocument();
+    expect(screen.getByText(/reconcile the submitted hash/i)).toBeInTheDocument();
+  });
+
   it("renders explicit verification failure for an invalid EOA address without synthesizing ACTIVE", () => {
     render(<DashboardView {...baseProps} vaultResolution="invalid" />);
     expect(screen.getByRole("heading", { name: /vault could not be verified/i })).toBeInTheDocument();

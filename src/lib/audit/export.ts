@@ -2,6 +2,7 @@ import type { DiscoveredWorkflowRegistration } from "@/lib/keeperhub/evidence";
 import type { Address, KeeperHubEvidence, VaultStatus } from "@/lib/succession/types";
 
 import type { ChainAuditEvent } from "./timeline";
+import { deriveEvidenceCompleteness } from "./completeness";
 
 type AuditCoverage =
   | { state: "idle" }
@@ -55,12 +56,23 @@ export function buildAuditExportManifest(input: AuditExportInput, generatedAt: s
         transactionHash: input.walletRecovery.transactionHash,
       }
     : undefined;
+  const evidenceCompleteness = deriveEvidenceCompleteness({
+    provenanceVerified: input.vault.provenance.kind === "factory_verified",
+    auditCoverage: input.auditIndexCoverage,
+    refreshState: input.keeperHub.reconciliation.refreshState,
+    currentVaultEvidence: input.keeperHub.reconciliation.currentVaultEvidence,
+    automationState: input.keeperHub.reconciliation.automationState,
+    keeperHubEvidence: input.keeperHub.evidence,
+    workflows: input.keeperHub.workflows,
+    walletRecovery,
+  });
   return {
     schema: "lastwish.audit.v1" as const,
     generatedAt,
     generatedAtSource: "client_clock" as const,
     environment: "testnet" as const,
     notice: "Point-in-time testnet evidence. Verify transaction receipts and current contract state independently before relying on this file.",
+    evidenceCompleteness,
     chain: input.chain,
     vault: {
       address: input.vault.address,
