@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="80" viewBox="0 0 320 80" role="img" aria-labelledby="title">
+  <title id="title">LastWish</title>
+  <g transform="translate(8 8)">
+    <circle cx="32" cy="32" r="30" fill="#17211c"/>
+    <circle cx="32" cy="32" r="20" fill="none" stroke="#fbf8f1" stroke-width="2.75"/>
+    <circle cx="32" cy="32" r="13" fill="none" stroke="#6f8d79" stroke-width="2"/>
+    <path d="M32 31V19M33 33l10 6M31 33l-10 6" fill="none" stroke="#fbf8f1" stroke-linecap="round" stroke-width="3"/>
+    <circle cx="32" cy="32" r="4.5" fill="#b56c24"/>
+    <circle cx="32" cy="19" r="1.75" fill="#fbf8f1"/>
+    <circle cx="43" cy="39" r="1.75" fill="#fbf8f1"/>
+    <circle cx="21" cy="39" r="1.75" fill="#fbf8f1"/>
+  </g>
+  <text x="88" y="52" fill="#17211c" font-family="Iowan Old Style, Baskerville, Georgia, serif" font-size="38" font-weight="700" letter-spacing="-1">LastWish</text>
+</svg>

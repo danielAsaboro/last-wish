@@ -22,6 +22,7 @@ describe("buildVaultWorkflows", () => {
       expect(workflow.nodes.map((node) => node.type)).toEqual(["trigger", "action", "action", "action"]);
       expect(workflow.nodes.map((node) => node.data.type)).toEqual(["trigger", "action", "action", "action"]);
       expect(workflow.nodes[1].data.config.actionType).toBe("web3/read-contract");
+      expect(workflow.nodes[1].data.config).not.toHaveProperty("web3Connection");
       expect(workflow.nodes[2]).toEqual({
         id: "eligible",
         type: "action",
@@ -36,6 +37,7 @@ describe("buildVaultWorkflows", () => {
       });
       expect(workflow.nodes.some((node) => (node as { type: string }).type === "condition" || "conditionType" in node.data.config)).toBe(false);
       expect(workflow.nodes[3].data.config.actionType).toBe("web3/write-contract");
+      expect(workflow.nodes[3].data.config).not.toHaveProperty("web3Connection");
       expect(workflow.edges.at(-1)).toMatchObject({ source: "eligible", target: "execute", sourceHandle: "true" });
     }
     expect(workflows[0].nodes[1].data.config.abiFunction).toBe("canOpenSettlementForPolicy");

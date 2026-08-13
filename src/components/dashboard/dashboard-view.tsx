@@ -1,5 +1,6 @@
 import Link from "next/link";
 
+import { BrandMark } from "@/components/brand-mark";
 import type { AuditTimelineItem } from "@/lib/audit/timeline";
 import type { VerificationStatus } from "@/lib/audit/completeness";
 import type { AutomationHealth, DiscoveredWorkflowRegistration } from "@/lib/keeperhub/evidence";
@@ -386,7 +387,7 @@ function VaultResolutionState({ title, detail, address, error }: { title: string
 }
 
 function DashboardFrame({ children }: { children: React.ReactNode }) {
-  return <div className="dashboard-shell"><header className="dashboard-nav"><Link className="wordmark" href="/"><span className="mark">LW</span>LastWish</Link><span>Testnet application</span></header><main className="dashboard-main">{children}</main></div>;
+  return <div className="dashboard-shell"><header className="dashboard-nav"><Link className="wordmark" href="/" aria-label="LastWish home"><BrandMark tone="inverse" />LastWish</Link><span>Testnet application</span></header><main className="dashboard-main">{children}</main></div>;
 }
 
 function shorten(value?: string, size = 6) {

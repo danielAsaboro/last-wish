@@ -1,5 +1,6 @@
 import { createConfig, http } from "wagmi";
 import { injected } from "wagmi/connectors/injected";
+import { metaMask } from "wagmi/connectors/metaMask";
 
 import { baseSepolia, sepolia } from "@/lib/chains";
 
@@ -8,7 +9,7 @@ export const preferredChain = Number(process.env.NEXT_PUBLIC_CHAIN_ID) === sepol
 
 export const wagmiConfig = createConfig({
   chains: supportedChains,
-  connectors: [injected()],
+  connectors: [metaMask(), injected()],
   ssr: true,
   transports: {
     [baseSepolia.id]: http(process.env.NEXT_PUBLIC_BASE_SEPOLIA_RPC_URL),

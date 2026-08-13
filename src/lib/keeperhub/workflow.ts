@@ -184,7 +184,6 @@ function buildWorkflow(
   const shortAddress = `${input.vault.slice(0, 8)}…${input.vault.slice(-4)}`;
   const sharedContractConfig = {
     network: String(input.chainId),
-    web3Connection: "default",
     contractAddress: input.vault,
     abi: eligibilityAbi,
     functionArgs: JSON.stringify([input.policyVersion.toString()]),

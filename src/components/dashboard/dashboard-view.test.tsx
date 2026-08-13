@@ -37,6 +37,12 @@ const baseProps: DashboardViewProps = {
 };
 
 describe("DashboardView", () => {
+  it("exposes the brand link as a single clear home destination", () => {
+    render(<DashboardView {...baseProps} />);
+
+    expect(screen.getByRole("link", { name: "LastWish home" })).toHaveAttribute("href", "/");
+  });
+
   it("gives a disconnected user one clear first action", () => {
     render(<DashboardView {...baseProps} connection="disconnected" account={undefined} role="observer" vaultAddress={undefined} />);
     expect(screen.getByRole("button", { name: /connect wallet/i })).toBeInTheDocument();

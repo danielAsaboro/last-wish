@@ -31,6 +31,12 @@ const mocks = vi.hoisted(() => {
     writeContract: vi.fn(),
     sendTransaction: vi.fn(),
     connectAsync: vi.fn(),
+    connectors: [{ id: "injected", name: "Injected", type: "injected", getProvider: async () => ({}) }] as Array<{
+      id: string;
+      name: string;
+      type: string;
+      getProvider: () => Promise<object | undefined>;
+    }>,
     switchChain: vi.fn(),
   };
 });
@@ -47,7 +53,7 @@ vi.mock("wagmi", () => {
   return {
     useAccount: () => ({ address: mocks.account, chainId: mocks.chainId, isConnected: mocks.isConnected }),
     useConnect: () => ({
-      connectors: [{ type: "injected", getProvider: async () => ({}) }],
+      connectors: mocks.connectors,
       connectAsync: mocks.connectAsync,
     }),
     useSwitchChain: () => ({ switchChain: mocks.switchChain }),
@@ -134,6 +140,8 @@ describe("DashboardApp async action identity", () => {
     mocks.signMessage.mockReset();
     mocks.writeContract.mockReset();
     mocks.sendTransaction.mockReset();
+    mocks.connectAsync.mockReset().mockResolvedValue(undefined);
+    mocks.connectors = [{ id: "injected", name: "Injected", type: "injected", getProvider: async () => ({}) }];
     fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes("/api/keeperhub/readiness")) {
@@ -154,6 +162,19 @@ describe("DashboardApp async action identity", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+  });
+
+  it("connects MetaMask instead of the first competing injected provider", async () => {
+    const phantom = { id: "app.phantom", name: "Phantom", type: "injected", getProvider: async () => ({}) };
+    const metaMask = { id: "io.metamask", name: "MetaMask", type: "injected", getProvider: async () => ({}) };
+    mocks.isConnected = false;
+    mocks.connectors = [phantom, metaMask];
+    window.localStorage.clear();
+
+    render(<DashboardApp />);
+    fireEvent.click(await screen.findByRole("button", { name: "Connect wallet" }));
+
+    await waitFor(() => expect(mocks.connectAsync).toHaveBeenCalledWith({ connector: metaMask }));
   });
 
   it("does not POST a registration when the connected account changes during signing", async () => {
@@ -354,6 +375,44 @@ describe("DashboardApp async action identity", () => {
     expect(mocks.getTransactionReceipt).toHaveBeenCalledWith({ hash: transactionHash });
     expect(mocks.waitForTransactionReceipt).toHaveBeenCalledTimes(1);
     expect(screen.getByRole("button", { name: /record heartbeat/i })).toBeEnabled();
+    expect(window.sessionStorage.getItem("lastwish:wallet-recovery:84532")).toBeNull();
+  });
+
+  it("reconciles a factory deployment submitted through a smart-wallet wrapper", async () => {
+    const transactionHash = `0x${"8".repeat(64)}` as const;
+    const trustedFactory = "0x5555555555555555555555555555555555555555" as const;
+    const smartWallet = "0x9999999999999999999999999999999999999999" as const;
+    window.sessionStorage.setItem("lastwish:wallet-recovery:84532", JSON.stringify({
+      chainId: 84532,
+      action: "deploy",
+      label: "Deploy vault",
+      target: trustedFactory,
+      transactionHash,
+      actor: owner,
+    }));
+    mocks.getTransactionReceipt.mockResolvedValue({
+      status: "success",
+      blockNumber: 121n,
+      to: smartWallet,
+      transactionHash,
+      logs: [{
+        address: trustedFactory,
+        topics: encodeEventTopics({ abi: factoryAbi, eventName: "VaultCreated", args: { owner, vault } }) as readonly `0x${string}`[],
+        data: encodeAbiParameters([{ type: "bool" }], [false]),
+        blockNumber: 121n,
+        transactionHash,
+        logIndex: 0,
+        transactionIndex: 0,
+        blockHash: rpcBlockHash(121n),
+        removed: false,
+      }],
+    });
+    render(<DashboardApp />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /check receipt again/i }));
+
+    await waitFor(() => expect(screen.queryByRole("heading", { name: /transaction needs reconciliation/i })).not.toBeInTheDocument());
+    expect(screen.getByText(/deployed and confirmed in block 121/i)).toBeInTheDocument();
     expect(window.sessionStorage.getItem("lastwish:wallet-recovery:84532")).toBeNull();
   });
 

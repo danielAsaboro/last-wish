@@ -1,0 +1,13 @@
+{
+  "name": "LastWish",
+  "short_name": "LastWish",
+  "description": "Programmable digital-asset succession.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f4f0e7",
+  "theme_color": "#17211c",
+  "icons": [
+    { "src": "/brand/lastwish-app-icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/brand/lastwish-app-icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

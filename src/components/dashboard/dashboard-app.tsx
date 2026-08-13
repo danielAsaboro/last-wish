@@ -103,6 +103,12 @@ export function selectWalletRecoveryForVault<T extends { target: Address }>(reco
   return recovery && vaultAddress && recovery.target.toLowerCase() === vaultAddress.toLowerCase() ? recovery : undefined;
 }
 
+export function selectPreferredWalletConnector<T extends { id: string; name: string; type: string }>(connectors: readonly T[]): T | undefined {
+  return connectors.find((connector) =>
+    connector.type === "metaMask" || `${connector.id} ${connector.name}`.toLowerCase().includes("metamask")
+  ) ?? connectors.find((connector) => connector.type === "injected");
+}
+
 function matchingAuditHistory(
   cache: Map<string, AuditHistoryCacheEntry>,
   key: string,
@@ -284,12 +290,12 @@ export function DashboardApp() {
 
   useEffect(() => {
     let cancelled = false;
-    const injectedConnector = connectors.find((connector) => connector.type === "injected");
-    if (!injectedConnector) {
+    const walletConnector = selectPreferredWalletConnector(connectors);
+    if (!walletConnector) {
       const unavailable = window.setTimeout(() => { if (!cancelled) setWalletAvailability("unavailable"); }, 0);
       return () => { cancelled = true; window.clearTimeout(unavailable); };
     }
-    void injectedConnector?.getProvider().then(
+    void walletConnector.getProvider().then(
       (provider) => { if (!cancelled) setWalletAvailability(provider ? "available" : "unavailable"); },
       () => { if (!cancelled) setWalletAvailability("unavailable"); },
     );
@@ -680,7 +686,8 @@ export function DashboardApp() {
     const recovery = walletRecoveryRef.current;
     if (!recovery || !publicClient || recovery.reconciling) return;
     replaceWalletRecovery({ ...recovery, reconciling: true });
-    const result = await reconcileTransactionReceipt(recovery.transactionHash, (hash) => publicClient.getTransactionReceipt({ hash }), recovery.target);
+    const expectedReceiptTarget = recovery.action === "deploy" ? undefined : recovery.target;
+    const result = await reconcileTransactionReceipt(recovery.transactionHash, (hash) => publicClient.getTransactionReceipt({ hash }), expectedReceiptTarget);
     if (walletRecoveryRef.current?.transactionHash !== recovery.transactionHash) return;
     if (result.kind === "confirmed") {
       if (recovery.action === "deploy") {
@@ -977,7 +984,7 @@ export function DashboardApp() {
     walletRecovery={walletRecovery}
     walletWritesBlocked={!walletRecoveryHydrated || Boolean(walletRecovery)}
     onConnect={() => {
-      const connector = connectors.find((candidate) => candidate.type === "injected");
+      const connector = selectPreferredWalletConnector(connectors);
       if (!connector) { setNotice({ tone: "danger", text: "No compatible injected EVM wallet is available. Install one and refresh this page." }); return; }
       void connectAsync({ connector }).catch((error) => setNotice({ tone: "danger", text: `Wallet connection was not completed: ${errorMessage(error)}` }));
     }}

@@ -1,3 +1,5 @@
+import { BrandMark } from "@/components/brand-mark";
+
 const steps = [
   ["01", "Create the policy", "Choose a guardian, fixed beneficiary shares, and an inactivity window. Your wallet signs the vault deployment."],
   ["02", "Keep the heartbeat", "A small owner transaction resets the clock. Nothing depends on an email, server login, or model decision."],
@@ -10,7 +12,7 @@ export default function Home() {
     <div className="site-shell">
       <header className="site-header wrap">
         <a className="wordmark" href="#top" aria-label="LastWish home">
-          <span className="mark" aria-hidden="true">LW</span>
+          <BrandMark />
           LastWish
         </a>
         <nav aria-label="Main navigation">
@@ -103,7 +105,7 @@ export default function Home() {
       </main>
 
       <footer className="site-footer wrap">
-        <div className="wordmark"><span className="mark" aria-hidden="true">LW</span>LastWish</div>
+        <div className="wordmark"><BrandMark />LastWish</div>
         <p>Programmable digital-asset succession.</p>
         <a href="/dashboard">Open dashboard →</a>
       </footer>
