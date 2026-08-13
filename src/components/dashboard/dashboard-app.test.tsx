@@ -16,6 +16,7 @@ function rpcBlockHash(blockNumber: bigint, variant = "0") {
 const mocks = vi.hoisted(() => {
   process.env.NEXT_PUBLIC_LASTWISH_FACTORY_ADDRESS = "0x5555555555555555555555555555555555555555";
   return {
+    isConnected: true,
     account: "0x1111111111111111111111111111111111111111" as `0x${string}`,
     chainId: 84532,
     invalidVault: undefined as string | undefined,
@@ -44,7 +45,7 @@ vi.mock("wagmi", () => {
     getTransactionReceipt: mocks.getTransactionReceipt,
   };
   return {
-    useAccount: () => ({ address: mocks.account, chainId: mocks.chainId, isConnected: true }),
+    useAccount: () => ({ address: mocks.account, chainId: mocks.chainId, isConnected: mocks.isConnected }),
     useConnect: () => ({
       connectors: [{ type: "injected", getProvider: async () => ({}) }],
       connectAsync: mocks.connectAsync,
@@ -57,7 +58,7 @@ vi.mock("wagmi", () => {
 
 vi.mock("@/lib/wallet/config", () => ({ preferredChain: { id: 84532, name: "Base Sepolia" } }));
 
-import { DashboardApp, PolicyEditor } from "./dashboard-app";
+import { DashboardApp, PolicyEditor, selectWalletRecoveryForVault } from "./dashboard-app";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -82,6 +83,7 @@ describe("DashboardApp async action identity", () => {
     window.localStorage.setItem("lastwish:vault:84532", vault);
     Object.defineProperty(document, "hidden", { configurable: true, value: false });
     mocks.account = owner;
+    mocks.isConnected = true;
     mocks.chainId = 84532;
     mocks.invalidVault = undefined;
     mocks.discoveredVault = vault;
@@ -207,6 +209,24 @@ describe("DashboardApp async action identity", () => {
 
     expect(await screen.findByText("KeeperHub evidence is unavailable")).toBeInTheDocument();
     expect(screen.queryByText("Finalize settlement")).not.toBeInTheDocument();
+  });
+
+  it("loads a factory-verified vault for read-only inspection without a connected wallet", async () => {
+    mocks.isConnected = false;
+    window.localStorage.clear();
+    render(<DashboardApp />);
+
+    fireEvent.change(await screen.findByRole("textbox", { name: /vault address/i }), { target: { value: vault } });
+    fireEvent.click(screen.getByRole("button", { name: /load vault/i }));
+
+    expect(await screen.findByText(/read-only inspection/i)).toBeInTheDocument();
+    expect(await screen.findByText(/vault balance · read from base sepolia/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /export audit json/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /record heartbeat|update policy|fund vault|withdraw|register keeperhub/i })).not.toBeInTheDocument();
+    expect(mocks.signMessage).not.toHaveBeenCalled();
+    expect(mocks.writeContract).not.toHaveBeenCalled();
+    expect(mocks.sendTransaction).not.toHaveBeenCalled();
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).includes("/api/keeperhub/workflows"))).toHaveLength(0);
   });
 
   it("downloads a point-in-time audit manifest from the verified vault", async () => {
@@ -1088,6 +1108,15 @@ describe("DashboardApp async action identity", () => {
     expect(screen.getByText("Vault funded")).toBeInTheDocument();
     expect(screen.getByText("Chain history indexed through block 101")).toBeInTheDocument();
     expect(screen.queryByText("Chain history indexed through block 100")).not.toBeInTheDocument();
+  });
+});
+
+describe("selectWalletRecoveryForVault", () => {
+  const recovery = { target: replacementVault, transactionHash: `0x${"d".repeat(64)}` as const };
+
+  it("keeps a global recovery warning out of an unrelated vault audit trail", () => {
+    expect(selectWalletRecoveryForVault(recovery, vault)).toBeUndefined();
+    expect(selectWalletRecoveryForVault(recovery, replacementVault)).toBe(recovery);
   });
 });
 

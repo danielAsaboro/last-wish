@@ -43,6 +43,24 @@ describe("DashboardView", () => {
     expect(screen.getByText(/your wallet is your account/i)).toBeInTheDocument();
   });
 
+  it("keeps a loaded observer read-only and explains how to unlock actions", () => {
+    const onConnect = vi.fn();
+    render(<DashboardView {...baseProps} connection="connected" account={undefined} role="observer" onConnect={onConnect} />);
+
+    expect(screen.getByText(/read-only inspection/i)).toBeInTheDocument();
+    expect(screen.getByText(/not connected/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /connect wallet to act/i }));
+    expect(onConnect).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("button", { name: /record heartbeat|update policy|fund vault|withdraw/i })).not.toBeInTheDocument();
+  });
+
+  it("does not offer an impossible connect action to an observer without an injected provider", () => {
+    render(<DashboardView {...baseProps} connection="connected" account={undefined} role="observer" walletAvailability="unavailable" />);
+
+    expect(screen.getByRole("button", { name: /connect wallet to act/i })).toBeDisabled();
+    expect(screen.getByRole("link", { name: /install an evm wallet/i })).toHaveAttribute("href", "https://metamask.io/download/");
+  });
+
   it("explains how to install a compatible EVM wallet when no injected provider exists", () => {
     render(<DashboardView {...baseProps} connection="disconnected" account={undefined} role="observer" vaultAddress={undefined} walletAvailability="unavailable" />);
     expect(screen.getByRole("button", { name: /connect wallet/i })).toBeDisabled();

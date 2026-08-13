@@ -62,7 +62,7 @@ export function DashboardView(props: DashboardViewProps) {
         <section className="connect-panel">
           <p className="eyebrow">Start with proof of control</p>
           <h1>Your wallet is your account.</h1>
-          <p>Connect an injected EVM wallet to create a vault or inspect one you already know. LastWish does not use passwords or hold keys.</p>
+          <p>Connect an injected EVM wallet to create or manage a vault. You can also inspect a known vault below without connecting. LastWish does not use passwords or hold keys.</p>
           {props.message && <div className={`notice ${props.message.tone}`} role="status">{props.message.text}</div>}
           {props.walletAvailability === "unavailable" ? <>
             <button className="button" disabled>Connect wallet</button>
@@ -71,6 +71,7 @@ export function DashboardView(props: DashboardViewProps) {
           </> : <button className="button" onClick={props.onConnect}>Connect wallet</button>}
           <ul className="trust-list"><li>No seed phrase requested</li><li>No transaction until you review it</li><li>Base Sepolia testnet</li></ul>
         </section>
+        {props.children}
       </DashboardFrame>
     );
   }
@@ -96,6 +97,14 @@ export function DashboardView(props: DashboardViewProps) {
         <div><p className="eyebrow">Vault command center</p><h1>Succession policy</h1></div>
         <div className="wallet-chip"><span className="live-dot" />{shorten(props.account)}<small>{props.role} · {props.chainName}</small></div>
       </header>
+
+      {!props.account && <section className="observer-banner">
+        <div><p className="eyebrow">Read-only inspection</p><strong>No wallet is connected.</strong><span>Vault state, contract events, and reconciled evidence remain available. Connect only when you need a role-authorized action.</span></div>
+        <div className="observer-actions">
+          <button type="button" disabled={props.walletAvailability === "unavailable"} onClick={props.onConnect}>Connect wallet to act</button>
+          {props.walletAvailability === "unavailable" && <a href="https://metamask.io/download/" target="_blank" rel="noreferrer">Install an EVM wallet ↗</a>}
+        </div>
+      </section>}
 
       {props.message && <div className={`notice ${props.message.tone}`} role="status">{props.message.text}</div>}
       {props.transactionProgress && <TransactionProgress progress={props.transactionProgress} chainName={props.chainName} />}

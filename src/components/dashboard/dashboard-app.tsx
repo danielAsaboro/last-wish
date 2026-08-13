@@ -96,6 +96,10 @@ const vaultRefreshUnavailableCopy = "The latest vault refresh is temporarily una
 const vaultVerificationUnavailableCopy = `Could not verify this address as a factory-proven LastWish vault on ${preferredChain.name}. Try again when the network is available.`;
 const walletRecoveryStorageKey = `lastwish:wallet-recovery:${preferredChain.id}`;
 
+export function selectWalletRecoveryForVault<T extends { target: Address }>(recovery: T | undefined, vaultAddress: Address | undefined): T | undefined {
+  return recovery && vaultAddress && recovery.target.toLowerCase() === vaultAddress.toLowerCase() ? recovery : undefined;
+}
+
 function matchingAuditHistory(
   cache: Map<string, AuditHistoryCacheEntry>,
   key: string,
@@ -114,6 +118,8 @@ export function DashboardApp() {
   const { switchChain } = useSwitchChain();
   const { data: walletClient } = useWalletClient();
   const publicClient = usePublicClient({ chainId: preferredChain.id });
+  const activeAccount = isConnected && chainId === preferredChain.id ? account : undefined;
+  const activeChainId = activeAccount ? preferredChain.id : undefined;
   const [vaultAddress, setVaultAddress] = useState<Address>();
   const [vault, setVault] = useState<LoadedVault>();
   const [vaultResolution, setVaultResolution] = useState<VaultResolution>({ state: "empty" });
@@ -141,8 +147,8 @@ export function DashboardApp() {
   const selectionEpoch = useRef(0);
   const actionEpoch = useRef(0);
   const evidenceGeneration = useRef(0);
-  const accountRef = useRef(account);
-  const chainIdRef = useRef(chainId);
+  const accountRef = useRef(activeAccount);
+  const chainIdRef = useRef(activeChainId);
   const readinessRef = useRef(readiness);
   const currentVaultEvidenceRef = useRef<CurrentVaultEvidence>("unknown");
   const automationHealthRef = useRef(deriveAutomationHealth([]));
@@ -185,7 +191,10 @@ export function DashboardApp() {
     submit(): Promise<Hash>;
     labels?: BeneficiaryLabels;
   }) {
-    if (!publicClient) return undefined;
+    if (!publicClient || !accountRef.current || chainIdRef.current !== preferredChain.id) {
+      setNotice({ tone: "warning", text: `Connect a wallet on ${preferredChain.name} before submitting a transaction.` });
+      return undefined;
+    }
     if (walletRecoveryRef.current) {
       setNotice({ tone: "warning", text: "Reconcile the submitted transaction before requesting another wallet write." });
       return undefined;
@@ -220,10 +229,10 @@ export function DashboardApp() {
   }
 
   useLayoutEffect(() => {
-    if (accountRef.current?.toLowerCase() !== account?.toLowerCase() || chainIdRef.current !== chainId) actionEpoch.current += 1;
-    accountRef.current = account;
-    chainIdRef.current = chainId;
-  }, [account, chainId]);
+    if (accountRef.current?.toLowerCase() !== activeAccount?.toLowerCase() || chainIdRef.current !== activeChainId) actionEpoch.current += 1;
+    accountRef.current = activeAccount;
+    chainIdRef.current = activeChainId;
+  }, [activeAccount, activeChainId]);
 
   const resetAutomationEvidence = useCallback(() => {
     setKeeperEvidence([]);
@@ -452,14 +461,14 @@ export function DashboardApp() {
   }, [refreshVault]);
 
   useEffect(() => {
-    if (vaultAddress || !account || !publicClient || !factoryAddress || !isAddress(factoryAddress)) return;
+    if (vaultAddress || !activeAccount || !publicClient || !factoryAddress || !isAddress(factoryAddress)) return;
     const discovery = window.setTimeout(async () => {
       try {
         const existing = await publicClient.readContract({
           address: getAddress(factoryAddress),
           abi: factoryAbi,
           functionName: "vaultOf",
-          args: [account],
+          args: [activeAccount],
         });
         if (existing !== zeroAddress) activateVault(existing);
       } catch {
@@ -467,7 +476,7 @@ export function DashboardApp() {
       }
     }, 0);
     return () => window.clearTimeout(discovery);
-  }, [account, activateVault, publicClient, vaultAddress]);
+  }, [activeAccount, activateVault, publicClient, vaultAddress]);
 
   const refreshEvidence = useCallback(async () => {
     const snapshot = vaultRef.current;
@@ -546,16 +555,20 @@ export function DashboardApp() {
   }, [refreshEvidence, vaultAddress, vault?.policyVersion, vaultResolution.state]);
 
   const role = useMemo<DashboardRole>(() => {
-    if (!account || !vault || !vaultAddress || !shouldApplyVaultSnapshot(vault.address, vaultAddress)) return "observer";
-    const normalized = account.toLowerCase();
+    if (!activeAccount || !vault || !vaultAddress || !shouldApplyVaultSnapshot(vault.address, vaultAddress)) return "observer";
+    const normalized = activeAccount.toLowerCase();
     if (vault.owner.toLowerCase() === normalized) return "owner";
     if (vault.guardian.toLowerCase() === normalized) return "guardian";
     if (vault.beneficiaries.some((beneficiary) => beneficiary.address.toLowerCase() === normalized)) return "beneficiary";
     return "observer";
-  }, [account, vault, vaultAddress]);
+  }, [activeAccount, vault, vaultAddress]);
 
-  const connection = !isConnected ? "disconnected" : chainId !== preferredChain.id ? "wrong-network" : "connected";
-  const auditItems = useMemo(() => buildAuditTimeline({ chainEvents: auditEvents, keeperHub: keeperEvidence, walletRecovery }), [auditEvents, keeperEvidence, walletRecovery]);
+  const connection = !isConnected && !vaultAddress ? "disconnected" : isConnected && chainId !== preferredChain.id ? "wrong-network" : "connected";
+  const auditItems = useMemo(() => buildAuditTimeline({
+    chainEvents: auditEvents,
+    keeperHub: keeperEvidence,
+    walletRecovery: selectWalletRecoveryForVault(walletRecovery, vaultAddress),
+  }), [auditEvents, keeperEvidence, vaultAddress, walletRecovery]);
   const lifecycle = useMemo(() => vault ? buildLifecycleSummary(vault, vault.observedAt) : undefined, [vault]);
   const automationHealth = useMemo(() => deriveAutomationHealth(discoveredWorkflows), [discoveredWorkflows]);
   const currentVaultEvidence = useMemo<CurrentVaultEvidence>(() => {
@@ -705,11 +718,11 @@ export function DashboardApp() {
   function handleAction(action: DashboardAction) {
     if (action === "fund" || action === "withdraw" || action === "update-policy") {
       const target = currentVerifiedVault();
-      if (!target || !account || chainId !== preferredChain.id) {
+      if (!target || !activeAccount) {
         setNotice({ tone: "warning", text: "Wait for factory provenance verification before opening a vault transaction." });
         return;
       }
-      setComposer({ kind: action, target: target.address, actor: account, policyVersion: target.policyVersion, selectionEpoch: selectionEpoch.current });
+      setComposer({ kind: action, target: target.address, actor: activeAccount, policyVersion: target.policyVersion, selectionEpoch: selectionEpoch.current });
       return;
     }
     if (action === "register") { void registerKeeperHub(); return; }
@@ -717,7 +730,7 @@ export function DashboardApp() {
   }
 
   async function deployVault(draft: PolicyDraft) {
-    if (!walletClient || !publicClient || !account) return;
+    if (!walletClient || !publicClient || !activeAccount) return;
     if (!factoryAddress || !isAddress(factoryAddress)) {
       setNotice({ tone: "danger", text: "Vault deployment is unavailable until NEXT_PUBLIC_LASTWISH_FACTORY_ADDRESS is configured." }); return;
     }
@@ -738,14 +751,14 @@ export function DashboardApp() {
       });
       if (!receipt) return;
       const createdEvents = parseEventLogs({ abi: factoryAbi, eventName: "VaultCreated", logs: receipt.logs });
-      const address = selectCreatedVault(createdEvents, trustedFactory, account);
+      const address = selectCreatedVault(createdEvents, trustedFactory, activeAccount);
       if (!address) {
-        replaceWalletRecovery({ action: "deploy", label: "Deploy vault", target: trustedFactory, transactionHash: receipt.transactionHash, reconciling: false, labels, actor: account });
+        replaceWalletRecovery({ action: "deploy", label: "Deploy vault", target: trustedFactory, transactionHash: receipt.transactionHash, reconciling: false, labels, actor: activeAccount });
         setNotice({ tone: "danger", text: "The factory receipt succeeded but did not contain a matching VaultCreated event. Keep the hash and reconcile factory state before continuing." });
         return;
       }
-      if (accountRef.current?.toLowerCase() !== account.toLowerCase() || chainIdRef.current !== preferredChain.id) {
-        replaceWalletRecovery({ action: "deploy", label: "Deploy vault", target: trustedFactory, transactionHash: receipt.transactionHash, reconciling: false, labels, actor: account });
+      if (accountRef.current?.toLowerCase() !== activeAccount.toLowerCase() || chainIdRef.current !== preferredChain.id) {
+        replaceWalletRecovery({ action: "deploy", label: "Deploy vault", target: trustedFactory, transactionHash: receipt.transactionHash, reconciling: false, labels, actor: activeAccount });
         setNotice({ tone: "warning", text: "The connected wallet changed before the deployment could be attached. Reconnect the deploying wallet and reconcile the submitted hash." });
         return;
       }
@@ -898,7 +911,7 @@ export function DashboardApp() {
 
   return <DashboardView
     connection={connection}
-    account={account}
+    account={activeAccount}
     chainName={preferredChain.name}
     role={role}
     status={vault?.status ?? "RECOVERY_REQUIRED"}
@@ -911,7 +924,7 @@ export function DashboardApp() {
     walletAvailability={walletAvailability}
     readiness={readiness}
     beneficiaries={(vault?.beneficiaries ?? []).map((beneficiary) => ({ label: beneficiary.label, address: beneficiary.address, shareLabel: `${beneficiary.shareBps / 100}%`, claimed: vault?.status === "SETTLED" && beneficiary.claimableWei === 0n }))}
-    canClaim={Boolean(account && vault?.beneficiaries.some((beneficiary) => beneficiary.address.toLowerCase() === account.toLowerCase() && beneficiary.claimableWei > 0n))}
+    canClaim={Boolean(activeAccount && vault?.beneficiaries.some((beneficiary) => beneficiary.address.toLowerCase() === activeAccount.toLowerCase() && beneficiary.claimableWei > 0n))}
     auditItems={auditItems}
     auditIndexCoverage={auditIndexCoverage}
     pendingAction={pendingAction}
@@ -937,7 +950,7 @@ export function DashboardApp() {
     onAction={handleAction}
   >
     <VaultWorkspace
-      account={account}
+      account={activeAccount}
       vault={vault}
       vaultAddress={vaultAddress}
       setVaultAddress={activateVault}
