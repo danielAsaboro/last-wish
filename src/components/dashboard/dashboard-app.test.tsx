@@ -1172,6 +1172,35 @@ describe("PolicyEditor Copilot transparency", () => {
     expect(screen.getByRole("alert")).toHaveTextContent(/no AI provider credential/i);
   });
 
+  it("rejects a tampered AI response without changing beneficiary identity", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json({
+      available: true,
+      source: "ai",
+      draft: {
+        beneficiaries: [
+          { label: "Ada", address: "0x6666666666666666666666666666666666666666", shareBps: 6000 },
+          { label: "Lin", address: "0x4444444444444444444444444444444444444444", shareBps: 4000 },
+        ],
+        heartbeatDays: 45,
+        graceDays: 21,
+        explanation: "This response changed a beneficiary address and must not reach the unsigned review.",
+      },
+    })));
+    render(<PolicyEditor owner={owner} mode="create" pending={false} onSubmit={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText(/guardian address/i), { target: { value: otherAccount } });
+    for (const [label, value] of [
+      ["Beneficiary 1 label", "Ada"], ["Beneficiary 1 address", vault],
+      ["Beneficiary 2 label", "Lin"], ["Beneficiary 2 address", "0x4444444444444444444444444444444444444444"],
+    ]) fireEvent.change(screen.getByLabelText(label), { target: { value } });
+    fireEvent.click(screen.getByRole("button", { name: /continue/i }));
+    fireEvent.change(screen.getByLabelText(/policy copilot notes/i), { target: { value: "Prefer a conservative window." } });
+    fireEvent.click(screen.getByRole("button", { name: /draft with copilot/i }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/invalid draft.*not changed/i);
+    fireEvent.click(screen.getByRole("button", { name: /back/i }));
+    expect(screen.getByLabelText("Beneficiary 1 address")).toHaveValue(vault);
+  });
+
   it("removes stale AI rationale after a reviewed parameter is edited", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json({
       available: true,
@@ -1265,5 +1294,60 @@ describe("PolicyEditor Copilot transparency", () => {
     expect(screen.getByLabelText(/heartbeat interval/i)).toHaveValue(60);
     expect(screen.queryByText(/stale rationale/i)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /draft with copilot/i })).toBeEnabled();
+  });
+
+  it("discards a late Copilot response after its instructions change", async () => {
+    const copilotResponse = deferred<Response>();
+    vi.stubGlobal("fetch", vi.fn().mockReturnValue(copilotResponse.promise));
+    render(<PolicyEditor owner={owner} mode="create" pending={false} onSubmit={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText(/guardian address/i), { target: { value: otherAccount } });
+    for (const [label, value] of [
+      ["Beneficiary 1 label", "Ada"], ["Beneficiary 1 address", vault],
+      ["Beneficiary 2 label", "Lin"], ["Beneficiary 2 address", "0x4444444444444444444444444444444444444444"],
+    ]) fireEvent.change(screen.getByLabelText(label), { target: { value } });
+    fireEvent.click(screen.getByRole("button", { name: /continue/i }));
+    fireEvent.change(screen.getByLabelText(/policy copilot notes/i), { target: { value: "Prefer a conservative window." } });
+    fireEvent.click(screen.getByRole("button", { name: /draft with copilot/i }));
+    fireEvent.change(screen.getByLabelText(/policy copilot notes/i), { target: { value: "Prefer a shorter maintenance interval." } });
+
+    await act(async () => {
+      copilotResponse.resolve(json({
+        available: true,
+        source: "ai",
+        draft: {
+          beneficiaries: [
+            { label: "Ada", address: vault, shareBps: 6000 },
+            { label: "Lin", address: "0x4444444444444444444444444444444444444444", shareBps: 4000 },
+          ],
+          heartbeatDays: 45,
+          graceDays: 21,
+          explanation: "This rationale belongs to the superseded instructions and must not be shown.",
+        },
+      }));
+      await copilotResponse.promise;
+    });
+
+    expect(screen.queryByText(/superseded instructions/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /draft with copilot/i })).toBeEnabled();
+  });
+
+  it.each([
+    [503, "<html>temporarily unavailable</html>", /copilot unavailable/i, /no AI provider credential/i],
+    [502, "", /draft with copilot/i, /could not produce a valid draft.*not changed/i],
+  ])("handles non-JSON Copilot HTTP %i without exposing parser errors", async (status, body, buttonName, errorCopy) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(body, { status, headers: { "Content-Type": "text/html" } })));
+    render(<PolicyEditor owner={owner} mode="create" pending={false} onSubmit={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText(/guardian address/i), { target: { value: otherAccount } });
+    for (const [label, value] of [
+      ["Beneficiary 1 label", "Ada"], ["Beneficiary 1 address", vault],
+      ["Beneficiary 2 label", "Lin"], ["Beneficiary 2 address", "0x4444444444444444444444444444444444444444"],
+    ]) fireEvent.change(screen.getByLabelText(label), { target: { value } });
+    fireEvent.click(screen.getByRole("button", { name: /continue/i }));
+    fireEvent.change(screen.getByLabelText(/policy copilot notes/i), { target: { value: "Prefer a conservative window." } });
+    fireEvent.click(screen.getByRole("button", { name: /draft with copilot/i }));
+
+    expect(await screen.findByRole("button", { name: buttonName })).toBeEnabled();
+    expect(screen.getByRole("alert")).toHaveTextContent(errorCopy);
+    expect(document.body).not.toHaveTextContent(/json|unexpected end|temporarily unavailable/i);
   });
 });

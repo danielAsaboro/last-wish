@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 
+import { handlePolicyRequest } from "@/lib/ai/policy-route";
 import { POST } from "./route";
 
 describe("POST /api/ai/policy", () => {
@@ -33,5 +34,22 @@ describe("POST /api/ai/policy", () => {
       }),
     );
     expect(response.status).toBe(400);
+  });
+
+  it("does not expose provider failures or credential-bearing URLs", async () => {
+    process.env.OPENAI_API_KEY = "configured";
+    const request = new Request("http://localhost/api/ai/policy", {
+      method: "POST",
+      body: JSON.stringify({
+        beneficiaries: [{ label: "Ada", address: "0x1111111111111111111111111111111111111111" }],
+        notes: "Prefer a conservative guardian review window.",
+      }),
+    });
+    const response = await handlePolicyRequest(request, async () => {
+      throw new Error("Provider failed at https://api.example/v1?token=secret-value");
+    });
+
+    expect(response.status).toBe(502);
+    expect(await response.text()).toBe(JSON.stringify({ error: "Policy Copilot could not produce a valid draft. Try again." }));
   });
 });

@@ -23,6 +23,7 @@ import { buildChainAuditEvents } from "@/lib/audit/chain-events";
 import { readEventHistoryInWindows } from "@/lib/audit/event-indexer";
 import { buildAuditExportManifest, downloadAuditExport } from "@/lib/audit/export";
 import { buildAuditTimeline, type ChainAuditEvent } from "@/lib/audit/timeline";
+import { parseCopilotSuccessResponse } from "@/lib/ai/policy-copilot-schema";
 import { factoryAbi, vaultAbi } from "@/lib/contracts/abi";
 import { AbortableRequestGeneration, isVerifiedVaultActionTarget, shouldApplyEvidenceResponse } from "@/lib/dashboard/async-guards";
 import { buildWorkflowAuthorizationMessage } from "@/lib/keeperhub/authorization";
@@ -1076,11 +1077,20 @@ export function PolicyEditor({ owner, mode, pending, initial, onSubmit }: { owne
     setCopilotState("loading"); setCopilotExplanation(""); setError("");
     try {
       if (!beneficiaries.every((beneficiary) => isAddress(beneficiary.address) && beneficiary.label)) throw new Error("Add beneficiary names and valid addresses before asking Copilot.");
-      const response = await fetch("/api/ai/policy", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ beneficiaries: beneficiaries.map(({ label, address }) => ({ label, address })), notes }) });
+      const request = { beneficiaries: beneficiaries.map(({ label, address }) => ({ label, address })), notes };
+      const response = await fetch("/api/ai/policy", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(request) });
+      if (requestGeneration !== copilotRequestGeneration.current) return;
+      if (!response.ok) {
+        setCopilotState(response.status === 503 ? "unavailable" : "idle");
+        setError(response.status === 503
+          ? "Policy Copilot is unavailable because no AI provider credential is configured."
+          : "Policy Copilot could not produce a valid draft. Your policy was not changed.");
+        return;
+      }
       const body = await response.json();
       if (requestGeneration !== copilotRequestGeneration.current) return;
-      if (!response.ok) { setCopilotState(response.status === 503 ? "unavailable" : "idle"); setError(body.error); return; }
-      setBeneficiaries(body.draft.beneficiaries); setHeartbeatDays(body.draft.heartbeatDays); setGraceDays(body.draft.graceDays); setCopilotExplanation(body.draft.explanation); setCopilotState("ready");
+      const copilotDraft = parseCopilotSuccessResponse(body, request);
+      setBeneficiaries(copilotDraft.beneficiaries); setHeartbeatDays(copilotDraft.heartbeatDays); setGraceDays(copilotDraft.graceDays); setCopilotExplanation(copilotDraft.explanation); setCopilotState("ready");
     } catch (caught) { if (requestGeneration === copilotRequestGeneration.current) { setCopilotState("idle"); setError(errorMessage(caught)); } }
   }
   function invalidateCopilotDraft() { copilotRequestGeneration.current += 1; setCopilotState("idle"); setCopilotExplanation(""); }
@@ -1104,7 +1114,7 @@ export function PolicyEditor({ owner, mode, pending, initial, onSubmit }: { owne
       <label>Heartbeat interval <input type="number" min="1" max="3650" value={heartbeatDays} onChange={(event) => { invalidateCopilotDraft(); setHeartbeatDays(Number(event.target.value)); }} /><span>days</span><small>How long before automation may open grace.</small></label>
       <label>Guardian grace period <input type="number" min="1" max="3650" value={graceDays} onChange={(event) => { invalidateCopilotDraft(); setGraceDays(Number(event.target.value)); }} /><span>days</span><small>Time to reactivate or veto before finalization.</small></label>
       <div className="copilot-box"><div><p className="eyebrow">AI SDK 7 Policy Copilot</p><strong>Draft parameters, never transactions.</strong><p>Describe priorities. Supplied addresses remain fixed and every draft is validated before wallet review.</p></div>
-        <textarea aria-label="Policy Copilot notes" placeholder="Example: keep a conservative review window and explain the trade-off…" value={notes} onChange={(event) => setNotes(event.target.value)} />
+        <textarea aria-label="Policy Copilot notes" placeholder="Example: keep a conservative review window and explain the trade-off…" value={notes} onChange={(event) => { invalidateCopilotDraft(); setNotes(event.target.value); }} />
         <button disabled={!notes || copilotState === "loading"} onClick={() => void askCopilot()}>{copilotState === "loading" ? "Drafting…" : copilotState === "unavailable" ? "Copilot unavailable" : "Draft with Copilot"}</button>
         {copilotExplanation && <aside className="copilot-rationale"><strong>AI-generated draft rationale</strong><p>{copilotExplanation}</p><small>Unsigned suggestion · review every value before asking your wallet to submit.</small></aside>}
       </div>
