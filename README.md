@@ -69,7 +69,20 @@ forge script script/Deploy.s.sol:DeployLastWish \
   --broadcast
 ```
 
-Use a dedicated funded testnet key and do not place it in a committed file. After deployment, verify the factory and set `NEXT_PUBLIC_LASTWISH_FACTORY_ADDRESS`. No deployment or verification link is claimed in this repository until a live run has been inspected.
+Use a dedicated funded testnet key and do not place it in a committed file. After deployment, verify the factory and set `NEXT_PUBLIC_LASTWISH_FACTORY_ADDRESS`.
+
+## Verified Base Sepolia execution
+
+An explicitly labelled 60-second heartbeat / 60-second grace-period demo vault completed the full self-custodial testnet flow on August 13, 2026. These shortened timings are for demonstration only; the normal dashboard uses day-scale timing.
+
+- Factory: [`0x2b1A…0BF9`](https://sepolia.basescan.org/address/0x2b1A8f06cb055c6e255708a0814621D91eB70BF9)
+- Vault: [`0xeE86…4221`](https://sepolia.basescan.org/address/0xeE8608DB5475272ec73232b99fF600D187974221)
+- [Vault creation](https://sepolia.basescan.org/tx/0x142f88b94d8e2df75a0d4ae2197c41b29c791456b35c719ec13b8089d0a12f18) and [0.003 ETH funding](https://sepolia.basescan.org/tx/0xc5ee5fe7a92e3735fda0447f256454a1c85cddab72e4cb74ba4dc616267afbe4)
+- KeeperHub open-settlement workflow `m1xayoqge0plq5879mu1a`, execution `2x9la6btzcskxl56rhnua`: [verified transaction](https://sepolia.basescan.org/tx/0xc8cd6a3f045d8f439181540fa50f80111d40b3679f6f955ff50208997eb6bd12)
+- KeeperHub finalize-settlement workflow `xzda7l3qq1h8ts4orn4lk`, execution `q4mkad42hsruzbiho6g3i`: [verified transaction](https://sepolia.basescan.org/tx/0x54c1d90f7cc4aeb30b79586826c985c21810c941e1a51d5f25855b927caa7e5d)
+- [Beneficiary claim](https://sepolia.basescan.org/tx/0x3b40efd1f562fa936b521f89fca8592ef67a8bebdc94295abc012300dbaf902d)
+
+Independent Base Sepolia RPC reads confirmed successful receipts, the expected vault events, terminal `SETTLED` state, zero vault balance, zero remaining claimable balance, and claim/finalization replay protection. No application or KeeperHub credential is published here.
 
 ## KeeperHub safety model
 
